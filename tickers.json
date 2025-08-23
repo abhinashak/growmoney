@@ -1,0 +1,18 @@
+{
+    "Abbott India": {"symbol": "ABBOTINDIA.NS", "sector": "Pharmaceuticals"},
+    "Ashok Leyland": {"symbol": "ASHOKLEY.NS", "sector": "Automobile"},
+    "Bajaj Finance": {"symbol": "BAJFINANCE.NS", "sector": "Financial Services"},
+    "Bharat Electronics": {"symbol": "BEL.NS", "sector": "Electronics"},
+    "Dabur India": {"symbol": "DABUR.NS", "sector": "FMCG"},
+    "HDFC Bank": {"symbol": "HDFCBANK.NS", "sector": "Financial Services"},
+    "Infosys": {"symbol": "INFY.NS", "sector": "IT"},
+    "ITC": {"symbol": "ITC.NS", "sector": "FMCG"},
+    "Larsen & Toubro": {"symbol": "LT.NS", "sector": "Infrastructure"},
+    "Maruti Suzuki India": {"symbol": "MARUTI.NS", "sector": "Automobile"},
+    "Reliance Industries": {"symbol": "RELIANCE.NS", "sector": "Energy"},
+    "State Bank of India": {"symbol": "SBIN.NS", "sector": "Financial Services"},
+    "Tata Consultancy Services": {"symbol": "TCS.NS", "sector": "IT"},
+    "Tata Motors": {"symbol": "TATAMOTORS.NS", "sector": "Automobile"},
+    "Hindustan Unilever": {"symbol": "HINDUNILVR.NS", "sector": "FMCG"},
+    "Max Healthcare Institute": {"symbol": "MAXHEALTH.NS", "sector": "Healthcare"}
+}
