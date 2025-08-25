@@ -14,5 +14,9 @@
     "Tata Consultancy Services": {"symbol": "TCS.NS", "sector": "IT"},
     "Tata Motors": {"symbol": "TATAMOTORS.NS", "sector": "Automobile"},
     "Hindustan Unilever": {"symbol": "HINDUNILVR.NS", "sector": "FMCG"},
-    "Max Healthcare Institute": {"symbol": "MAXHEALTH.NS", "sector": "Healthcare"}
+    "Max Healthcare Institute": {"symbol": "MAXHEALTH.NS", "sector": "Healthcare"},
+    "Parag Pareek Flexi Cap" : {"symbol" : "0P0000YWL1.BO", "sector": "mf"}, 
+    "Niftybees" : {"symbol" : "NIFTYBEES.BO", "sector": "mf"},
+    "Goldbees" : {"symbol" : "GOLDBEES.NS", "sector": "mf"},
+    "Motilal Oswal Midcap 150" : {"symbol" : "0P0001IAU9.BO", "sector": "mf"}
 }
