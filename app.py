@@ -636,7 +636,7 @@ if st.session_state.initial_portfolio:
     st.subheader("Relative Stock Analysis")
     
     # Define mandatory options regardless of portfolio
-    mandatory_options = ["Portfolio", "0P0000YWL1.BO", "NIFTYBEES.BO", "GOLDBEES.NS", "0P0001IAU9.BO"]
+    mandatory_options = ["Portfolio", "NIFTYBEES.BO", "GOLDBEES.NS", "0P0000YWL1.BO", "0P0001IAU9.BO"]
     
     # Get portfolio options and combine with mandatory ones, removing duplicates
     portfolio_symbols = list(set(s['symbol'] for s in st.session_state.initial_portfolio))
