@@ -343,15 +343,39 @@ def calculate_period_returns(series, periods):
     """
     returns = {}
     periods_map = {
-        '7d': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, '2y': 730
+        '1d': 1, '7d': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, '2y': 730
     }
+    
     for period_label, days in periods_map.items():
+        # Check if we have enough data points
         if len(series) > days:
-            start_price = series.iloc[-days-1] if len(series) > days else np.nan
-            end_price = series.iloc[-1]
-            returns[period_label] = (end_price / start_price - 1) if not pd.isna(start_price) and start_price != 0 else np.nan
+            try:
+                # For very short periods (1d, 7d), use a safer indexing approach
+                if days == 1:
+                    # For 1-day return, compare last two values
+                    if len(series) >= 2:
+                        start_price = series.iloc[-2]
+                        end_price = series.iloc[-1]
+                    else:
+                        returns[period_label] = np.nan
+                        continue
+                else:
+                    # For other periods, use the standard approach but with bounds checking
+                    start_idx = max(0, len(series) - days - 1)
+                    start_price = series.iloc[start_idx]
+                    end_price = series.iloc[-1]
+                
+                # Calculate return with proper null checking
+                if pd.isna(start_price) or pd.isna(end_price) or start_price == 0:
+                    returns[period_label] = np.nan
+                else:
+                    returns[period_label] = (end_price / start_price) - 1
+                    
+            except (IndexError, KeyError):
+                returns[period_label] = np.nan
         else:
             returns[period_label] = np.nan
+    
     return returns
 
 def get_dividend_history(symbol):
@@ -675,7 +699,7 @@ if st.session_state.initial_portfolio:
             st.subheader("Portfolio Composition")
             composition_df = calculate_portfolio_composition(st.session_state.initial_portfolio, all_prices)
             if not composition_df.empty:
-                fig_comp = px.pie(composition_df, values='weight', names='symbol', title='Current Portfolio Allocation',
+                fig_comp = px.pie(composition_df, values='value', names='symbol', title='Current Portfolio Allocation',
                                   template="plotly_dark", hole=0.3)
                 fig_comp.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig_comp, use_container_width=True)
@@ -694,6 +718,200 @@ if st.session_state.initial_portfolio:
                 st.info("No data to display performance attribution.")
 
         st.markdown("---")
+
+
+        # --- Relative Stock Analysis ---
+        if selected_options:
+            # --- Individual Stock Returns ---
+            st.markdown("#### Individual Stock Returns")
+            
+            returns_periods = {'1d' : 1, '7d': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, '2y': 730}
+            
+            stock_returns_df = pd.DataFrame(index=returns_periods.keys())
+            
+            for symbol in selected_options:
+                if symbol == 'Portfolio':
+                    if not as_is_portfolio.empty:
+                        stock_returns_df['Portfolio'] = calculate_period_returns(as_is_portfolio, returns_periods).values()
+                else:
+                    stock_returns_df[symbol] = calculate_period_returns(all_prices[symbol], returns_periods).values()
+            
+            st.dataframe(stock_returns_df.T.style.format("{:.2%}"))
+
+            # --- Individual Stock Price Movement (Normalized) ---
+            st.markdown("#### Relative Stock Price Movement")
+            
+            time_period_map = {
+                '1d' : 1, '7d': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, '2y': 730
+            }
+            selected_period = st.selectbox("Select time period for normalized chart", options=list(time_period_map.keys()))
+            
+            end_date = all_prices.index.max()
+            start_date = end_date - timedelta(days=time_period_map[selected_period])
+            
+            prices_to_plot_df = all_prices.loc[start_date:end_date]
+            
+            # Normalize to 100
+            fig_indiv = go.Figure()
+
+            # Add stocks
+            colors = px.colors.qualitative.Set1
+            for i, col in enumerate(prices_to_plot_df.columns):
+                if col in selected_options:
+                    normalized_prices = (prices_to_plot_df[col] / prices_to_plot_df[col].iloc[0]) * 100
+                    fig_indiv.add_trace(go.Scatter(x=normalized_prices.index, y=normalized_prices, mode='lines', name=col, line=dict(color=colors[i % len(colors)], width=2)))
+
+            # Add portfolio
+            if 'Portfolio' in selected_options and not as_is_portfolio.empty:
+                portfolio_slice = as_is_portfolio.loc[start_date:end_date]
+                if not portfolio_slice.empty:
+                    normalized_portfolio = (portfolio_slice / portfolio_slice.iloc[0]) * 100
+                    fig_indiv.add_trace(go.Scatter(x=normalized_portfolio.index, y=normalized_portfolio, mode='lines', name='Portfolio', line=dict(color='black', width=4), hovertemplate='Portfolio<br>Date: %{x}<br>Value: %{y:.2f}<extra></extra>'))
+
+            fig_indiv.update_layout(
+                title_text=f"Normalized Stock Price Movement (Base 100) - {selected_period}",
+                xaxis_title="Date",
+                yaxis_title="Normalized Price",
+                hovermode="x unified",
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                template="plotly_dark"
+            )
+            st.plotly_chart(fig_indiv, use_container_width=True)
+            
+        st.markdown("---")
+
+        # --- Sector Performance Analysis ---
+        st.subheader("Sector Performance Analysis")
+        sector_performance_df = calculate_sector_performance(all_prices, st.session_state.initial_portfolio, tickers)
+        if not sector_performance_df.empty:
+            fig_sector = px.bar(sector_performance_df, x='Sector', y='Annualized Return', 
+                                title='Annualized Return by Sector', template="plotly_dark")
+            fig_sector.update_layout(yaxis_tickformat=".2%")
+            st.plotly_chart(fig_sector, use_container_width=True)
+        else:
+            st.info("No data to display sector performance.")
+        
+        st.markdown("---")
+        
+        # --- Asset Correlation Analysis ---
+        st.subheader("Asset Correlation Analysis")
+        stock_returns_df = all_prices.pct_change().dropna()
+        if not stock_returns_df.empty and len(stock_returns_df.columns) > 1:
+            correlation_matrix = stock_returns_df.corr()
+            
+            # Use the correlation matrix columns directly for both axes
+            mapped_columns = correlation_matrix.columns.tolist()
+            
+            fig = go.Figure(data=go.Heatmap(
+                z=correlation_matrix.values,
+                x=mapped_columns,
+                y=mapped_columns,
+                colorscale='RdBu',
+                zmid=0,
+                text=correlation_matrix.values.round(3),
+                texttemplate="%{text}",
+                textfont={"size": 10},
+                hovertemplate='%{x} vs %{y}<br>Correlation: %{z:.3f}<extra></extra>'
+            ))
+            
+            fig.update_layout(
+                title="Asset Correlation Matrix",
+                width=720,
+                height=680
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Not enough assets in the portfolio to calculate correlation.")
+
+        # --- Risk Analytics Dashboard ---
+        st.subheader("Risk Analytics Dashboard")
+        if not as_is_portfolio.empty:
+            portfolio_returns = as_is_portfolio.pct_change().dropna()
+            
+            # Get the comprehensive risk metrics dictionary
+            risk_metrics = calculate_risk_metrics(portfolio_returns)
+
+            # Display all risk metrics in three columns
+            risk_col1, risk_col2, risk_col3 = st.columns(3)
+            
+            metrics_to_show = {
+                "Annual Return": "{:.2%}",
+                "Volatility": "{:.2%}",
+                "Sharpe Ratio": "{:.2f}",
+                "Sortino Ratio": "{:.2f}",
+                "Max Drawdown": "{:.2%}",
+                "Calmar Ratio": "{:.2f}",
+                "VaR (95%)": "{:.2%}",
+                "CVaR (95%)": "{:.2%}",
+                "Skewness": "{:.2f}",
+                "Kurtosis": "{:.2f}"
+            }
+            
+            metric_list = list(metrics_to_show.keys())
+            
+            with risk_col1:
+                st.metric(label=metric_list[0], value=metrics_to_show[metric_list[0]].format(risk_metrics.get('Annual_Return')) if not pd.isna(risk_metrics.get('Annual_Return')) else "N/A")
+                st.metric(label=metric_list[1], value=metrics_to_show[metric_list[1]].format(risk_metrics.get('Volatility')) if not pd.isna(risk_metrics.get('Volatility')) else "N/A")
+                st.metric(label=metric_list[2], value=metrics_to_show[metric_list[2]].format(risk_metrics.get('Sharpe_Ratio')) if not pd.isna(risk_metrics.get('Sharpe_Ratio')) else "N/A")
+                
+            with risk_col2:
+                st.metric(label=metric_list[3], value=metrics_to_show[metric_list[3]].format(risk_metrics.get('Sortino_Ratio')) if not pd.isna(risk_metrics.get('Sortino_Ratio')) else "N/A")
+                st.metric(label=metric_list[4], value=metrics_to_show[metric_list[4]].format(risk_metrics.get('Max_Drawdown')) if not pd.isna(risk_metrics.get('Max_Drawdown')) else "N/A")
+                st.metric(label=metric_list[5], value=metrics_to_show[metric_list[5]].format(risk_metrics.get('Calmar_Ratio')) if not pd.isna(risk_metrics.get('Calmar_Ratio')) else "N/A")
+
+            with risk_col3:
+                st.metric(label=metric_list[6], value=metrics_to_show[metric_list[6]].format(risk_metrics.get('VaR_95')) if not pd.isna(risk_metrics.get('VaR_95')) else "N/A")
+                st.metric(label=metric_list[7], value=metrics_to_show[metric_list[7]].format(risk_metrics.get('CVaR_95')) if not pd.isna(risk_metrics.get('CVaR_95')) else "N/A")
+                st.metric(label=metric_list[8], value=metrics_to_show[metric_list[8]].format(risk_metrics.get('Skewness')) if not pd.isna(risk_metrics.get('Skewness')) else "N/A")
+                st.metric(label=metric_list[9], value=metrics_to_show[metric_list[9]].format(risk_metrics.get('Kurtosis')) if not pd.isna(risk_metrics.get('Kurtosis')) else "N/A")
+            
+            st.markdown("---")
+            st.subheader("Monte Carlo Simulation")
+            st.write("Project your portfolio's future performance based on historical data.")
+            
+            # Monte Carlo Simulation parameters
+            col1, col2 = st.columns(2)
+            with col1:
+                num_simulations = st.slider("Number of Simulations", 10, 1000, 100)
+            with col2:
+                forecast_days = st.slider("Forecast Period (days)", 30, 730, 365)
+            
+            if st.button("Run Monte Carlo Simulation"):
+                with st.spinner('Running Monte Carlo simulation...'):
+                    simulated_paths = run_monte_carlo_simulation(portfolio_returns, num_simulations, forecast_days)
+                    
+                    fig_mc = go.Figure()
+                    for i in range(num_simulations):
+                        fig_mc.add_trace(go.Scatter(x=list(range(forecast_days)), y=simulated_paths[:, i] * as_is_portfolio.iloc[-1],
+                                                    mode='lines', line=dict(color='lightblue', width=0.5), showlegend=False, name=f'Simulation {i+1}'))
+                    
+                    percentiles = [5, 25, 50, 75, 95]
+                    colors = ['red', 'orange', 'green', 'orange', 'red']
+                    names = ['5th Percentile', '25th Percentile', 'Median', '75th Percentile', '95th Percentile']
+                    
+                    for p, color, name in zip(percentiles, colors, names):
+                        percentile_values = np.percentile(simulated_paths, p, axis=1) * as_is_portfolio.iloc[-1]
+                        fig_mc.add_trace(go.Scatter(
+                            x=list(range(forecast_days)),
+                            y=percentile_values,
+                            mode='lines',
+                            line=dict(color=color, width=3),
+                            name=name
+                        ))
+
+                    fig_mc.update_layout(
+                        title=f"Monte Carlo Simulation - {forecast_days} Days, {num_simulations} Simulations",
+                        xaxis_title="Days",
+                        yaxis_title="Projected Portfolio Value (Rs.)",
+                        height=500
+                    )
+                    st.plotly_chart(fig_mc, use_container_width=True)
+        else:
+            st.warning("Cannot calculate risk metrics or run Monte Carlo simulation without a valid portfolio.")
+            
+        st.markdown("---")
+
 
         # --- Simulated Portfolio Performance ---
         st.subheader("Simulated Portfolio Performance")
@@ -733,65 +951,6 @@ if st.session_state.initial_portfolio:
 
         st.markdown("---")
 
-        # --- Relative Stock Analysis ---
-        if selected_options:
-            # --- Individual Stock Returns ---
-            st.markdown("#### Individual Stock Returns")
-            
-            returns_periods = {'7d': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, '2y': 730}
-            
-            stock_returns_df = pd.DataFrame(index=returns_periods.keys())
-            
-            for symbol in selected_options:
-                if symbol == 'Portfolio':
-                    if not as_is_portfolio.empty:
-                        stock_returns_df['Portfolio'] = calculate_period_returns(as_is_portfolio, returns_periods).values()
-                else:
-                    stock_returns_df[symbol] = calculate_period_returns(all_prices[symbol], returns_periods).values()
-            
-            st.dataframe(stock_returns_df.T.style.format("{:.2%}"))
-
-            # --- Individual Stock Price Movement (Normalized) ---
-            st.markdown("#### Relative Stock Price Movement")
-            
-            time_period_map = {
-                '7d': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, '2y': 730
-            }
-            selected_period = st.selectbox("Select time period for normalized chart", options=list(time_period_map.keys()))
-            
-            end_date = all_prices.index.max()
-            start_date = end_date - timedelta(days=time_period_map[selected_period])
-            
-            prices_to_plot_df = all_prices.loc[start_date:end_date]
-            
-            # Normalize to 100
-            fig_indiv = go.Figure()
-
-            # Add stocks
-            colors = px.colors.qualitative.Set1
-            for i, col in enumerate(prices_to_plot_df.columns):
-                if col in selected_options:
-                    normalized_prices = (prices_to_plot_df[col] / prices_to_plot_df[col].iloc[0]) * 100
-                    fig_indiv.add_trace(go.Scatter(x=normalized_prices.index, y=normalized_prices, mode='lines', name=col, line=dict(color=colors[i % len(colors)], width=2)))
-
-            # Add portfolio
-            if 'Portfolio' in selected_options and not as_is_portfolio.empty:
-                portfolio_slice = as_is_portfolio.loc[start_date:end_date]
-                if not portfolio_slice.empty:
-                    normalized_portfolio = (portfolio_slice / portfolio_slice.iloc[0]) * 100
-                    fig_indiv.add_trace(go.Scatter(x=normalized_portfolio.index, y=normalized_portfolio, mode='lines', name='Portfolio', line=dict(color='black', width=4), hovertemplate='Portfolio<br>Date: %{x}<br>Value: %{y:.2f}<extra></extra>'))
-
-            fig_indiv.update_layout(
-                title_text=f"Normalized Stock Price Movement (Base 100) - {selected_period}",
-                xaxis_title="Date",
-                yaxis_title="Normalized Price",
-                hovermode="x unified",
-                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-                template="plotly_dark"
-            )
-            st.plotly_chart(fig_indiv, use_container_width=True)
-            
-        st.markdown("---")
 
         # --- Detailed Single Stock Analysis ---
         st.subheader("Detailed Single Stock Analysis")
@@ -991,138 +1150,6 @@ if st.session_state.initial_portfolio:
             
         st.markdown("---")
         
-        # --- Risk Analytics Dashboard ---
-        st.subheader("Risk Analytics Dashboard")
-        if not as_is_portfolio.empty:
-            portfolio_returns = as_is_portfolio.pct_change().dropna()
-            
-            # Get the comprehensive risk metrics dictionary
-            risk_metrics = calculate_risk_metrics(portfolio_returns)
-
-            # Display all risk metrics in three columns
-            risk_col1, risk_col2, risk_col3 = st.columns(3)
-            
-            metrics_to_show = {
-                "Annual Return": "{:.2%}",
-                "Volatility": "{:.2%}",
-                "Sharpe Ratio": "{:.2f}",
-                "Sortino Ratio": "{:.2f}",
-                "Max Drawdown": "{:.2%}",
-                "Calmar Ratio": "{:.2f}",
-                "VaR (95%)": "{:.2%}",
-                "CVaR (95%)": "{:.2%}",
-                "Skewness": "{:.2f}",
-                "Kurtosis": "{:.2f}"
-            }
-            
-            metric_list = list(metrics_to_show.keys())
-            
-            with risk_col1:
-                st.metric(label=metric_list[0], value=metrics_to_show[metric_list[0]].format(risk_metrics.get('Annual_Return')) if not pd.isna(risk_metrics.get('Annual_Return')) else "N/A")
-                st.metric(label=metric_list[1], value=metrics_to_show[metric_list[1]].format(risk_metrics.get('Volatility')) if not pd.isna(risk_metrics.get('Volatility')) else "N/A")
-                st.metric(label=metric_list[2], value=metrics_to_show[metric_list[2]].format(risk_metrics.get('Sharpe_Ratio')) if not pd.isna(risk_metrics.get('Sharpe_Ratio')) else "N/A")
-                
-            with risk_col2:
-                st.metric(label=metric_list[3], value=metrics_to_show[metric_list[3]].format(risk_metrics.get('Sortino_Ratio')) if not pd.isna(risk_metrics.get('Sortino_Ratio')) else "N/A")
-                st.metric(label=metric_list[4], value=metrics_to_show[metric_list[4]].format(risk_metrics.get('Max_Drawdown')) if not pd.isna(risk_metrics.get('Max_Drawdown')) else "N/A")
-                st.metric(label=metric_list[5], value=metrics_to_show[metric_list[5]].format(risk_metrics.get('Calmar_Ratio')) if not pd.isna(risk_metrics.get('Calmar_Ratio')) else "N/A")
-
-            with risk_col3:
-                st.metric(label=metric_list[6], value=metrics_to_show[metric_list[6]].format(risk_metrics.get('VaR_95')) if not pd.isna(risk_metrics.get('VaR_95')) else "N/A")
-                st.metric(label=metric_list[7], value=metrics_to_show[metric_list[7]].format(risk_metrics.get('CVaR_95')) if not pd.isna(risk_metrics.get('CVaR_95')) else "N/A")
-                st.metric(label=metric_list[8], value=metrics_to_show[metric_list[8]].format(risk_metrics.get('Skewness')) if not pd.isna(risk_metrics.get('Skewness')) else "N/A")
-                st.metric(label=metric_list[9], value=metrics_to_show[metric_list[9]].format(risk_metrics.get('Kurtosis')) if not pd.isna(risk_metrics.get('Kurtosis')) else "N/A")
-            
-            st.markdown("---")
-            st.subheader("Monte Carlo Simulation")
-            st.write("Project your portfolio's future performance based on historical data.")
-            
-            # Monte Carlo Simulation parameters
-            col1, col2 = st.columns(2)
-            with col1:
-                num_simulations = st.slider("Number of Simulations", 10, 1000, 100)
-            with col2:
-                forecast_days = st.slider("Forecast Period (days)", 30, 730, 365)
-            
-            if st.button("Run Monte Carlo Simulation"):
-                with st.spinner('Running Monte Carlo simulation...'):
-                    simulated_paths = run_monte_carlo_simulation(portfolio_returns, num_simulations, forecast_days)
-                    
-                    fig_mc = go.Figure()
-                    for i in range(num_simulations):
-                        fig_mc.add_trace(go.Scatter(x=list(range(forecast_days)), y=simulated_paths[:, i] * as_is_portfolio.iloc[-1],
-                                                    mode='lines', line=dict(color='lightblue', width=0.5), showlegend=False, name=f'Simulation {i+1}'))
-                    
-                    percentiles = [5, 25, 50, 75, 95]
-                    colors = ['red', 'orange', 'green', 'orange', 'red']
-                    names = ['5th Percentile', '25th Percentile', 'Median', '75th Percentile', '95th Percentile']
-                    
-                    for p, color, name in zip(percentiles, colors, names):
-                        percentile_values = np.percentile(simulated_paths, p, axis=1) * as_is_portfolio.iloc[-1]
-                        fig_mc.add_trace(go.Scatter(
-                            x=list(range(forecast_days)),
-                            y=percentile_values,
-                            mode='lines',
-                            line=dict(color=color, width=3),
-                            name=name
-                        ))
-
-                    fig_mc.update_layout(
-                        title=f"Monte Carlo Simulation - {forecast_days} Days, {num_simulations} Simulations",
-                        xaxis_title="Days",
-                        yaxis_title="Projected Portfolio Value (Rs.)",
-                        height=500
-                    )
-                    st.plotly_chart(fig_mc, use_container_width=True)
-        else:
-            st.warning("Cannot calculate risk metrics or run Monte Carlo simulation without a valid portfolio.")
-            
-        st.markdown("---")
-
-        # --- Sector Performance Analysis ---
-        st.subheader("Sector Performance Analysis")
-        sector_performance_df = calculate_sector_performance(all_prices, st.session_state.initial_portfolio, tickers)
-        if not sector_performance_df.empty:
-            fig_sector = px.bar(sector_performance_df, x='Sector', y='Annualized Return', 
-                                title='Annualized Return by Sector', template="plotly_dark")
-            fig_sector.update_layout(yaxis_tickformat=".2%")
-            st.plotly_chart(fig_sector, use_container_width=True)
-        else:
-            st.info("No data to display sector performance.")
-        
-        st.markdown("---")
-        
-        # --- Asset Correlation Analysis ---
-        st.subheader("Asset Correlation Analysis")
-        stock_returns_df = all_prices.pct_change().dropna()
-        if not stock_returns_df.empty and len(stock_returns_df.columns) > 1:
-            correlation_matrix = stock_returns_df.corr()
-            
-            # Use the correlation matrix columns directly for both axes
-            mapped_columns = correlation_matrix.columns.tolist()
-            
-            fig = go.Figure(data=go.Heatmap(
-                z=correlation_matrix.values,
-                x=mapped_columns,
-                y=mapped_columns,
-                colorscale='RdBu',
-                zmid=0,
-                text=correlation_matrix.values.round(3),
-                texttemplate="%{text}",
-                textfont={"size": 10},
-                hovertemplate='%{x} vs %{y}<br>Correlation: %{z:.3f}<extra></extra>'
-            ))
-            
-            fig.update_layout(
-                title="Asset Correlation Matrix",
-                width=720,
-                height=680
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Not enough assets in the portfolio to calculate correlation.")
-
     else:
         st.error("Failed to download stock data. Please check the symbols and dates.")
 
