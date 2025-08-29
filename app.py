@@ -343,7 +343,7 @@ def calculate_period_returns(series, periods):
     """
     returns = {}
     periods_map = {
-        '1d': 1, '7d': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, '2y': 730
+        '1d': 1, '7d': 7, '1m': 30, '2m': 60, '3m': 90, '6m': 180, '1y': 365, '2y': 730
     }
     
     for period_label, days in periods_map.items():
@@ -725,7 +725,7 @@ if st.session_state.initial_portfolio:
             # --- Individual Stock Returns ---
             st.markdown("#### Individual Stock Returns")
             
-            returns_periods = {'1d' : 1, '7d': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, '2y': 730}
+            returns_periods = {'1d' : 1, '7d': 7, '1m': 30, '2m': 60, '3m': 90, '6m': 180, '1y': 365, '2y': 730}
             
             stock_returns_df = pd.DataFrame(index=returns_periods.keys())
             
@@ -742,7 +742,7 @@ if st.session_state.initial_portfolio:
             st.markdown("#### Relative Stock Price Movement")
             
             time_period_map = {
-                '1d' : 1, '7d': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, '2y': 730
+                '1d' : 1, '7d': 7, '1m': 30, '2m': 60, '3m': 90, '6m': 180, '1y': 365, '2y': 730
             }
             selected_period = st.selectbox("Select time period for normalized chart", options=list(time_period_map.keys()))
             
