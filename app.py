@@ -1079,10 +1079,10 @@ if st.session_state.initial_portfolio:
                 )
                 
                 # Price, SMAs and Bollinger Bands
-                fig_ta.add_trace(go.Scatter(x=hist.index, y=hist['Close'], name='Price', line=dict(color='black', width=2)), row=1, col=1)
-                fig_ta.add_trace(go.Scatter(x=hist.index, y=hist['BB_Upper'], name='Upper BB', line=dict(color='gray', dash='dash')), row=1, col=1)
+                fig_ta.add_trace(go.Scatter(x=hist.index, y=hist['Close'], name='Price', line=dict(color='black', width=4)), row=1, col=1)
+                fig_ta.add_trace(go.Scatter(x=hist.index, y=hist['BB_Upper'], name='Upper BB', line=dict(color='green', dash='dash')), row=1, col=1)
                 fig_ta.add_trace(go.Scatter(x=hist.index, y=hist['BB_Middle'], name='Middle BB', line=dict(color='blue', dash='dash')), row=1, col=1)
-                fig_ta.add_trace(go.Scatter(x=hist.index, y=hist['BB_Lower'], name='Lower BB', line=dict(color='gray', dash='dash')), row=1, col=1)
+                fig_ta.add_trace(go.Scatter(x=hist.index, y=hist['BB_Lower'], name='Lower BB', line=dict(color='green', dash='dash')), row=1, col=1)
 
                 # Add SMAs
                 fig_ta.add_trace(go.Scatter(x=hist.index, y=hist['SMA_20'], name='SMA 20', line=dict(color='green', width=1)), row=1, col=1)
