@@ -18,5 +18,7 @@
     "Parag Pareek Flexi Cap" : {"symbol" : "0P0000YWL1.BO", "sector": "mf"}, 
     "Niftybees" : {"symbol" : "NIFTYBEES.BO", "sector": "mf"},
     "Goldbees" : {"symbol" : "GOLDBEES.NS", "sector": "mf"},
-    "Motilal Oswal Midcap 150" : {"symbol" : "0P0001IAU9.BO", "sector": "mf"}
+    "Motilal Oswal Midcap 150" : {"symbol" : "0P0001IAU9.BO", "sector": "mf"},
+    "Polycab" : {"symbol" : "POLYCAB.NS", "sector": "Infrastructure"},
+    "Kovai Medical" : {"symbol" : "KOVAI.BO", "sector": "Healthcare"}
 }
