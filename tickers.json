@@ -70,5 +70,7 @@
   "State Bank of India": {"symbol": "SBIN.NS", "sector": "Financial Services"},
   "IndusInd Bank": {"symbol": "INDUSINDBK.NS", "sector": "Financial Services"},
   "Adani Enterprises": {"symbol": "ADANIENT.NS", "sector": "Conglomerate"},
-  "Tata Motors": {"symbol": "TATAMOTORS.NS", "sector": "Automobile"}
+  "Tata Motors": {"symbol": "TATAMOTORS.NS", "sector": "Automobile"},
+  "Suzlon": {"symbol": "SUZLON.NS", "sector": "Energy"}
+    
 }
