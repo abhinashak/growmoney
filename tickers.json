@@ -71,6 +71,8 @@
   "IndusInd Bank": {"symbol": "INDUSINDBK.NS", "sector": "Financial Services"},
   "Adani Enterprises": {"symbol": "ADANIENT.NS", "sector": "Conglomerate"},
   "Tata Motors": {"symbol": "TATAMOTORS.NS", "sector": "Automobile"},
-  "Suzlon": {"symbol": "SUZLON.NS", "sector": "Energy"}
+  "Suzlon": {"symbol": "SUZLON.NS", "sector": "Energy"},
+  "HDFC Flexi Cap Fund": {"symbol": "0P00005WLZ.BO", "sector": "MF"},
+    
     
 }
