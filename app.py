@@ -69,7 +69,7 @@ def load_tickers(file_path):
         return {}
 
 # Load the tickers at the start of the script
-tickers = load_tickers('bubble.json')
+tickers = load_tickers('tickers.json')
 
 # -------------------------------
 # Helper Functions
