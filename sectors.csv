@@ -1,0 +1,16 @@
+﻿Sectors,Weight,Logic & Selection,Exit News to Watch,Stock1,Stock2,Stock3,Stock4,Stock5
+Defense Export Pivot,30,Focus on global export order backlogs.,Geopolitical peace treaties in the Middle East.,HAL.NS,BEL.NS,MAZDOCK.NS,SOLARINDS.NS,BHARATFORG.NS
+Tier-1 aerospace suppliers,5,Global supply for Boeing/Airbus.,Cancellation of major global aircraft orders.,BHARATFORG.NS,HAL.NS,AZAD.NS,CYIENTDLM.NS,DYNAMATECH.NS
+Drone Warfare,5,Licensed indigenous manufacturing.,Cheaper drone imports allowed from allies.,IDEAFORGE.NS,ZENTEC.NS,PARAS.NS,DCMSHRIRAM.NS,SOLARINDS.NS
+Nifty 250 to 150,5,Mid-cap to Large-cap migration.,Sudden institutional sell-off in mid-caps.,POLYCAB.NS,TRENT.NS,MAZDOCK.NS,KEI.NS,KALYANKJIL.NS
+Commodity Alpha,15,Copper/AI shortage for EVs/Grids.,China property sector 2.0 crash.,HINDALCO.NS,HINDCOPPER.NS,VEDL.NS,NATIONALUM.NS,VEDL.NS
+Edge Computing,15,Hardware for local AI processing.,Delay in 6G rollout.,DIXON.NS,KAYNES.NS,CENTUM.NS,ASTRAMICRO.NS,SYRMA.NS
+Green Hydrogen,0,Net Zero 2030 hardware plays.,Hydrogen costs staying above $2/kg.,ADANIENT.NS,LT.NS,RELIANCE.NS,CUMMINSIND.NS,MTARTECH.NS
+Year 6 Cycle Hedge,5,Correction protection.,Prolonged Goldilocks economy.,GOLDBEES.NS,SILVERBEES.NS,NIFTYBEES.NS,LIQUIDBEES.NS,GILT5YBEES.NS
+China + 1 Parts,5,Auto/Elec components for export.,Normalization of India-China trade.,SONACOMS.NS,MOTHERSON.NS,UNOMINDA.NS,VARROC.NS,BHARATFORG.NS
+Water Scarcity,0,Industrial wastewater management.,Nationalization of urban water assets.,GRAVITA.NS,IONEXCHANG.NS,THERMAX.NS,TRIVENI.NS,PRAJIND.NS
+Stable Large-Cap,5,Defensive dividend yielders.,Earnings growth slowing below inflation.,ITC.NS,COALINDIA.NS,NTPC.NS,POWERGRID.NS,AUROPHARMA.NS
+Metals Intrinsic,0,Industrial cycle holds.,Shift to carbon-fiber in construction.,TATASTEEL.NS,JSWSTEEL.NS,SAIL.NS,NATIONALUM.NS,NMDC.NS
+Rare Earths,0,Critical minerals for tech.,Discovery of synthetic Rare Earths.,HINDZINC.NS,NMDC.NS,VEDL.NS,COALINDIA.NS,HINDALCO.NS
+Sustainable Fuel,0,SAF for aviation sector.,Global shift to hydrogen-powered planes.,HINDPETRO.NS,BPCL.NS,PRAJIND.NS,MRPL.NS,IOC.NS
+Nuclear SMR,10,Small Modular Reactors for baseload.,Global nuclear safety mishaps.,BHEL.NS,LT.NS,KSB.NS,WALCHANNAG.NS,NMDC.NS
