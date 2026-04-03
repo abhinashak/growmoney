@@ -14,47 +14,38 @@ st.set_page_config(layout="wide", page_title="Bloomberg-Style Asset Comparator")
 SYMBOLS = {
     # 🇮🇳 Broad Market Indices
     "NIFTY 50": "^NSEI",
-    "NIFTY 500": "0P0001IAU3.BO",
-    "INDIA VIX": "^INDIAVIX",
+"PP Flexicap": "0P0000YWL1.BO",
+  "Coromandel International": "COROMANDEL.NS",
+  "Bharat Electronics": "BEL.NS",
+  "Bharat Forge": "BHARATFORG.NS",
+  "Nippon India Gold BEES": "GOLDBEES.NS",
+  "Nippon India Silver BEES": "SILVERBEES.NS",
+  "Hindustan Copper": "HINDCOPPER.NS",
+  "ONGC": "ONGC.NS",
+  "NTPC": "NTPC.NS",
+  "Coal India": "COALINDIA.NS",
+  "KSB": "KSB.NS",
+  "NMDC": "NMDC.NS",
+  "Dynamatic Technologies": "DYNAMATECH.NS",
+  "Larsen & Toubro": "LT.NS",
+  "JSW Steel": "JSWSTEEL.NS",
+  "Motherson Sumi": "MOTHERSON.NS",
+  "Syrma SGS": "SYRMA.NS",
+  "Maruti Suzuki": "MARUTI.NS",
+  "State Bank of India": "SBIN.NS",
+  "ICICI Bank": "ICICIBANK.NS",
+  "Sun Pharma": "SUNPHARMA.NS",
+  "Glenmark Pharmaceuticals": "GLENMARK.NS",
+  "Apollo Hospitals": "APOLLOHOSP.NS",
+  "Zensar Technologies": "ZENSARTECH.NS",
+  "Tata Consumer Products": "TATACONSUM.NS",
+  "Titan Company": "TITAN.NS",
+  "Bharti Airtel": "BHARTIARTL.NS",
+  "InterGlobe Aviation (IndiGo)": "INDIGO.NS",
+  "Hero MotoCorp": "HEROMOTOCO.NS",
+  "EIH Limited": "EIHOTEL.NS",
+  "Oberoi Realty": "OBEROIRLTY.NS"
 
-    # 🇮🇳 Sector Indices (NSE)
-    "NIFTY IT": "^CNXIT",
-    "NIFTY Bank Index": "^NSEBANK",
-    "NIFTY Financial Services": "^CNXFIN",
-    "NIFTY Auto Index": "^CNXAUTO",
-    "NIFTY Pharma Index": "^CNXPHARMA",
-    "NIFTY FMCG": "^CNXFMCG",
-    "NIFTY Media": "^CNXMEDIA",
-    "NIFTY Metal": "^CNXMETAL",
-    "NIFTY Energy": "^CNXENERGY",
-    "NIFTY Realty": "^CNXREALTY",
-    "NIFTY PSU Bank": "^CNXPSUBANK",
-
-    # 🇮🇳 ETFs
-    "NIFTYBEES": "NIFTYBEES.NS",
-    "Next 50": "JUNIORBEES.NS",
-    "MID150BEES": "MID150BEES.NS",
-    "NV20": "NV20BEES.NS",
-    "BANKBEES": "BANKBEES.NS",
-    "INFRABEES": "INFRABEES.NS",
-    "PHARMABEES": "PHARMABEES.NS",
-    "AUTOBEES": "AUTOBEES.NS",
-    "Defence ETF": "MODEFENCE.NS",
-    "GOLD": "GOLDBEES.NS",
-    "SILVER": "SILVERBEES.NS",
-
-    # 🇮🇳 Stocks
-    "Airtel": "BHARTIARTL.NS",
-
-    # 🇮🇳 Mutual Funds
-    "PP Flexicap": "0P0000YWL1.BO",
-    "SBI Hybrid": "0P0000XVJO.BO",
-    "HDFC Balanced Adv": "0P0001EI15.BO",
-    "Motilal Enhanced": "0P0001PHVM.BO",
-    "Consumerables Fund": "0P0000XVT1.BO",
-
-    # 🌍 Global Macro
-    "DXY": "DX-Y.NYB",
 }
 
 # -----------------------------
@@ -250,9 +241,9 @@ st.radio("Select Period:", ranges, horizontal=True, key="time_range")
 # Pairwise Analysis Section
 # -----------------------------
 st.markdown("---")
-st.markdown("### 📋 Pairwise Analysis")
+st.markdown("### 📋 Pairwise Analysis & Lag Study")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns([2, 2, 1])
 
 with col1:
     base_ticker = st.text_input(
@@ -268,15 +259,22 @@ with col2:
         key="compare_right_input"
     )
 
+with col3:
+    # Negative shifts the data back (Lead), Positive shifts it forward (Lag)
+    shift_days = st.number_input("Shift 'Compare' (Days)", value=0, step=1)
+
 pair_compare = None
 
 if base_ticker and custom_ticker:
     try:
-        custom_data_raw = yf.download(custom_ticker, start=start_date, end=end_date, progress=False)
-        base_data_raw = yf.download(base_ticker, start=start_date, end=end_date, progress=False)
+        buffer_days = abs(shift_days) + 10
+        fetch_start = start_date - timedelta(days=buffer_days)
+        custom_data_raw = yf.download(custom_ticker, start=fetch_start, end=end_date, progress=False)
+        base_data_raw = yf.download(base_ticker, start=fetch_start, end=end_date, progress=False)
 
         if not custom_data_raw.empty and not base_data_raw.empty and "Close" in custom_data_raw and "Close" in base_data_raw:
             custom_data = custom_data_raw["Close"].replace(0, np.nan).dropna()
+            custom_data = custom_data.shift(shift_days)
             custom_data.name = custom_ticker.upper()
 
             base_data = base_data_raw["Close"].replace(0, np.nan).dropna()
