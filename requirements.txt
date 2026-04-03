@@ -5,3 +5,4 @@ scipy
 streamlit
 yfinance
 matplotlib
+openpyxl>=3.1
