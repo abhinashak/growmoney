@@ -1,0 +1,115 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+# --- CONFIGURATION & UTILS ---
+DEFAULT_TARGET = """0P0000YWL0.BO\t9.9
+COROMANDEL.NS\t3.0
+BEL.NS\t4.0
+RELIANCE.NS\t10.0
+HDFCBANK.NS\t10.0"""
+
+DEFAULT_PORTFOLIO = """COROMANDEL.NS\t500
+BEL.NS\t1200"""
+
+def get_resilience_multipliers(tickers):
+    """Fetches macro and technical data to calculate deployment speed."""
+    # Proxies for Risk
+    macro_tickers = {"Oil": "BZ=F", "VIX": "^INDIAVIX", "US10Y": "^TNX", "SBIN": "SBIN.NS"}
+    all_req_tickers = list(tickers) + list(macro_tickers.values())
+
+    data = yf.download(all_req_tickers, period="1y", interval="1d")['Close']
+
+    # 1. Macro Multiplier (The 'Global Brake')
+    vix = data['^INDIAVIX'].iloc[-1]
+    oil_trend = data['BZ=F'].iloc[-1] / data['BZ=F'].rolling(50).mean().iloc[-1]
+    # Slow down if VIX > 20 or Oil is spiking
+    macro_mult = 1.0
+    if vix > 22: macro_mult *= 0.7
+    if oil_trend > 1.1: macro_mult *= 0.8
+
+    results = {}
+    sbin_perf = data['SBIN.NS'].ffill().pct_change(120, fill_method=None).iloc[-1]
+
+    for t in tickers:
+        try:
+            # 2. Technical Multiplier (200 DMA)
+            ma200 = data[t].rolling(200).mean().iloc[-1]
+            price = data[t].iloc[-1]
+            # If price is > 15% above 200DMA, it's 'hot'. Slow down.
+            tech_mult = np.clip(1.1 - (price / ma200 - 1), 0.5, 1.2)
+
+            # 3. Cash Cycle Multiplier (Rel. Strength vs SBIN)
+            stock_perf = data[t].ffill().pct_change(120, fill_method=None).iloc[-1]
+            rs_mult = 1.0 + (sbin_perf - stock_perf) # Mean reversion logic
+
+            results[t] = {
+                "price": price,
+                "multiplier": np.clip(tech_mult * rs_mult * macro_mult, 0.3, 1.5)
+            }
+        except:
+            results[t] = {"price": 0, "multiplier": 1.0}
+
+    return results
+
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Institutional Deployment Engine", layout="wide")
+st.title("🏛️ ₹1B NSE Deployment Command")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("Strategy Inputs")
+    total_cap = st.number_input("Total Capital to Deploy (INR)", value=1000000000, step=10000000)
+
+    target_raw = st.text_area("Target Distribution (Ticker [TAB] %)", value=DEFAULT_TARGET, height=150)
+    portfolio_raw = st.text_area("Current Portfolio (Ticker [TAB] Quantity)", value=DEFAULT_PORTFOLIO, height=150)
+
+    days_to_deploy = st.slider("Deployment Horizon (Days)", 30, 250, 180)
+
+if st.button("Calculate Today's Tranche"):
+    # Parsing Logic
+    try:
+        targets = {line.split('\t')[0].strip(): float(line.split('\t')[1]) / 100
+                   for line in target_raw.strip().split('\n')}
+
+        current_holdings = {line.split('\t')[0].strip(): int(line.split('\t')[1])
+                            for line in portfolio_raw.strip().split('\n')}
+
+        # Core Engine
+        with st.spinner("Analyzing Market Resilience Factors..."):
+            metrics = get_resilience_multipliers(targets.keys())
+
+        results_table = []
+        for ticker, weight in targets.items():
+            price = metrics[ticker]['price']
+            multiplier = metrics[ticker]['multiplier']
+
+            target_value = total_cap * weight
+            current_value = current_holdings.get(ticker, 0) * price
+            gap_value = max(0, target_value - current_value)
+
+            # Daily tranche = (Gap / Remaining Days) * Resilience Multiplier
+            daily_buy_inr = (gap_value / days_to_deploy) * multiplier
+            daily_qty = int(daily_buy_inr / price) if price > 0 else 0
+
+            results_table.append({
+                "Ticker": ticker,
+                "Target Value (Cr)": round(target_value / 1e7, 2),
+                "Current Value (Cr)": round(current_value / 1e7, 2),
+                "Gap (Cr)": round(gap_value / 1e7, 2),
+                "Resilience Score": f"{multiplier:.2f}x",
+                "TODAY'S BUY (QTY)": daily_qty,
+                "Est. Outlay (INR)": f"{int(daily_qty * price):,}"
+            })
+
+        st.subheader("Today's Deployment Execution Plan")
+        df_final = pd.DataFrame(results_table)
+        st.table(df_final)
+
+        st.info(f"💡 **Strategy Note:** Resilience Score < 1.0 suggests slowing down (High Risk/Overextended). Score > 1.0 suggests aggressive fill (Value/Cycle Alignment).")
+
+    except Exception as e:
+        st.error(f"Data Format Error: Ensure you use TABS between ticker and values. Error: {e}")
