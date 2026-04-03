@@ -5,7 +5,3 @@ scipy
 streamlit
 yfinance
 matplotlib
-os
-re
-datetime
-warnings
