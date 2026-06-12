@@ -9,6 +9,63 @@ from datetime import datetime, timedelta
 import io
 import numpy as np
 import time
+import os
+
+# ── Load news validation data ─────────────────────────────────────────────────
+def load_news_data():
+    # Look for news.json alongside the script, or in cwd
+    for path in [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'news.json'),
+        os.path.join(os.getcwd(), 'news.json'),
+        'news.json',
+    ]:
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                return json.load(f)
+    return {}
+
+_raw_news = load_news_data()
+
+# Flatten all phases into one dict keyed by cell code (A1, B2, etc.)
+NEWS_OVERLAY = {}
+for phase_data in _raw_news.values():
+    if isinstance(phase_data, dict):
+        for key, val in phase_data.items():
+            if isinstance(val, dict) and 'status' in val:
+                NEWS_OVERLAY[key] = val
+
+# Status → badge style mapping
+STATUS_BADGE = {
+    'Validated 🟢':   ('background:#EAF3DE;color:#27500A;border:0.5px solid #97C459;', '✅'),
+    'Partial 🟡':     ('background:#FFF8E8;color:#854F0B;border:0.5px solid #FAC775;', '⚠️'),
+    'Too Early ⏳':   ('background:#F1EFE8;color:#666560;border:0.5px solid #B4B2A9;', '⏳'),
+    'Invalidated 🔴': ('background:#FCEBEB;color:#791F1F;border:0.5px solid #F09595;', '❌'),
+}
+DEFAULT_BADGE = ('background:#F1EFE8;color:#888480;border:0.5px solid #D6D3CA;', '·')
+
+def cell_key(row_idx, col_idx):
+    """Map row/col index to JSON key: col A–E, row 1–10"""
+    return f"{chr(65 + col_idx)}{row_idx + 1}"
+
+def news_overlay_html(row_idx, col_idx):
+    key = cell_key(row_idx, col_idx)
+    data = NEWS_OVERLAY.get(key)
+    if not data:
+        return ''
+    status = data.get('status', '')
+    signal = data.get('real_world_signal', '')
+    divergence = data.get('thesis_divergence', '')
+    confidence = data.get('confidence', '')
+    style, icon = STATUS_BADGE.get(status, DEFAULT_BADGE)
+    show_div = '' if divergence in ('', 'None', 'None.') else f"<div style='margin-top:5px;padding-top:5px;border-top:0.5px solid rgba(0,0,0,0.1);font-size:9.5px;opacity:0.8;'><b>Divergence:</b> {divergence}</div>"
+    return f"""<div style='margin-top:6px;padding:5px 7px;border-radius:5px;font-size:10px;line-height:1.45;{style}'>
+<div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;'>
+  <span style='font-weight:600;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;'>{icon} {status}</span>
+  <span style='font-size:9px;opacity:0.7;'>conf: {confidence}</span>
+</div>
+<div style='font-size:10px;'>{signal}</div>{show_div}
+</div>"""
+
 
 st.set_page_config(
     page_title="AI IPO Macro Dashboard",
@@ -870,13 +927,43 @@ with tab5:
     # SGB note
     st.markdown("""
     <div class='note-box'>
-    <b style='color:#854F0B;'>SGB advantage:</b> Sovereign Gold Bonds offer 2.5% annual interest + gold price appreciation + tax-free maturity at 8 years.
-    Best vehicle for the gold leg of this thesis. Physical gold for insurance (5–10% of gold allocation).
+    <b style='color:#854F0B;'>SGB advantage:</b> Sovereign Gold Bonds offer 2.5% annual interest + gold price appreciation + tax-free maturity at 8 years. 
+    Best vehicle for the gold leg of this thesis. Physical gold for insurance (5–10% of gold allocation). 
     Avoid gold ETFs as primary vehicle — counterparty risk defeats the purpose in a rupture scenario.
     </div>""", unsafe_allow_html=True)
 
 
 # ── Month-by-month timeline ───────────────────────────────────────────────────
+# ── Cascade health banner (from news.json) ──────────────────────────────────
+if NEWS_OVERLAY:
+    _summary = _raw_news.get('overall_summary', {})
+    _score = _summary.get('cascade_health_index', None)
+    _flags = _summary.get('immediate_red_flags', '')
+    _validated = sum(1 for v in NEWS_OVERLAY.values() if 'Validated' in v.get('status',''))
+    _partial   = sum(1 for v in NEWS_OVERLAY.values() if 'Partial'   in v.get('status',''))
+    _total     = len(NEWS_OVERLAY)
+    _bar_w     = f"{_score}%" if _score else "0%"
+    _bar_color = "#27500A" if _score and _score >= 75 else "#854F0B" if _score and _score >= 50 else "#791F1F"
+    st.markdown(f"""
+<div style='background:#FFFFFF;border:0.5px solid #D6D3CA;border-left:3px solid {_bar_color};
+     border-radius:8px;padding:10px 14px;margin-bottom:10px;'>
+  <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;'>
+    <span style='font-size:11px;font-weight:600;color:#1A1A18;'>📰 Live news overlay active — {_total} cells annotated</span>
+    <span style='font-size:11px;font-weight:600;color:{_bar_color};'>Cascade health: {_score}/100</span>
+  </div>
+  <div style='background:#F1EFE8;border-radius:4px;height:6px;margin-bottom:8px;'>
+    <div style='background:{_bar_color};width:{_bar_w};height:6px;border-radius:4px;'></div>
+  </div>
+  <div style='display:flex;gap:12px;margin-bottom:6px;'>
+    <span style='font-size:10px;background:#EAF3DE;color:#27500A;padding:2px 7px;border-radius:4px;'>✅ Validated: {_validated}</span>
+    <span style='font-size:10px;background:#FFF8E8;color:#854F0B;padding:2px 7px;border-radius:4px;'>⚠️ Partial: {_partial}</span>
+    <span style='font-size:10px;background:#F1EFE8;color:#666560;padding:2px 7px;border-radius:4px;'>⏳ Too early: {_total - _validated - _partial}</span>
+  </div>
+  <div style='font-size:10px;color:#666560;line-height:1.5;'><b style='color:#791F1F;'>Red flags:</b> {_flags}</div>
+</div>""", unsafe_allow_html=True)
+elif not NEWS_OVERLAY:
+    st.info("📂 Place **news.json** in the same folder as m.py to activate live news overlays on each cell.")
+
 st.markdown("<div class='section-header'>Month-by-month timeline</div>", unsafe_allow_html=True)
 
 # Phase pills
@@ -901,10 +988,11 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-for row in TIMELINE_ROWS:
+for row_idx, row in enumerate(TIMELINE_ROWS):
     cells_html = ''
-    for cls, title, desc in row['cells']:
-        cells_html += f"<div class='tl-cell {cls}'><b>{title}</b><span>{desc}</span></div>"
+    for col_idx, (cls, title, desc) in enumerate(row['cells']):
+        overlay = news_overlay_html(row_idx, col_idx)
+        cells_html += f"<div class='tl-cell {cls}'><b>{title}</b><span>{desc}</span>{overlay}</div>"
 
     period_display = row['period'].replace('\n', '<br>')
     st.markdown(f"""
