@@ -1,1056 +1,1766 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
 import requests
+import yfinance as yf
+import pandas_datareader.data as web
+import datetime
+import calendar
 import json
-from datetime import datetime, timedelta
 import io
-import numpy as np
-import time
 import os
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# ── Load news validation data ─────────────────────────────────────────────────
-def load_news_data():
-    # Look for news.json alongside the script, or in cwd
-    for path in [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'news.json'),
-        os.path.join(os.getcwd(), 'news.json'),
-        'news.json',
-    ]:
-        if os.path.exists(path):
-            with open(path, 'r') as f:
-                return json.load(f)
-    return {}
-
-_raw_news = load_news_data()
-
-# Flatten all phases into one dict keyed by cell code (A1, B2, etc.)
-NEWS_OVERLAY = {}
-for phase_data in _raw_news.values():
-    if isinstance(phase_data, dict):
-        for key, val in phase_data.items():
-            if isinstance(val, dict) and 'status' in val:
-                NEWS_OVERLAY[key] = val
-
-# Status → badge style mapping
-STATUS_BADGE = {
-    'Validated 🟢':   ('background:#EAF3DE;color:#27500A;border:0.5px solid #97C459;', '✅'),
-    'Partial 🟡':     ('background:#FFF8E8;color:#854F0B;border:0.5px solid #FAC775;', '⚠️'),
-    'Too Early ⏳':   ('background:#F1EFE8;color:#666560;border:0.5px solid #B4B2A9;', '⏳'),
-    'Invalidated 🔴': ('background:#FCEBEB;color:#791F1F;border:0.5px solid #F09595;', '❌'),
-}
-DEFAULT_BADGE = ('background:#F1EFE8;color:#888480;border:0.5px solid #D6D3CA;', '·')
-
-def cell_key(row_idx, col_idx):
-    """Map row/col index to JSON key: col A–E, row 1–10"""
-    return f"{chr(65 + col_idx)}{row_idx + 1}"
-
-def news_overlay_html(row_idx, col_idx):
-    key = cell_key(row_idx, col_idx)
-    data = NEWS_OVERLAY.get(key)
-    if not data:
-        return ''
-    status = data.get('status', '')
-    signal = data.get('real_world_signal', '')
-    divergence = data.get('thesis_divergence', '')
-    confidence = data.get('confidence', '')
-    style, icon = STATUS_BADGE.get(status, DEFAULT_BADGE)
-    show_div = '' if divergence in ('', 'None', 'None.') else f"<div style='margin-top:5px;padding-top:5px;border-top:0.5px solid rgba(0,0,0,0.1);font-size:9.5px;opacity:0.8;'><b>Divergence:</b> {divergence}</div>"
-    return f"""<div style='margin-top:6px;padding:5px 7px;border-radius:5px;font-size:10px;line-height:1.45;{style}'>
-<div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;'>
-  <span style='font-weight:600;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;'>{icon} {status}</span>
-  <span style='font-size:9px;opacity:0.7;'>conf: {confidence}</span>
-</div>
-<div style='font-size:10px;'>{signal}</div>{show_div}
-</div>"""
+# Single shared page configuration for the merged application
+st.set_page_config(page_title="Macro Dashboard Suite", page_icon="📊", layout="wide")
 
 
-st.set_page_config(
-    page_title="AI IPO Macro Dashboard",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+# ======================================================================
+# GIFT NIFTY LIVE BANNER  (scraped from zerodha.com/market/giftnifty)
+# ======================================================================
 
-# ── Custom CSS — light theme matching HTML reference ─────────────────────────
-st.markdown("""
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
-
-  /* ── Base ── */
-  html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-  .main { background-color: #F5F4F0; }
-  .block-container { padding: 1.5rem 2rem; max-width: 1400px; background: #F5F4F0; }
-
-  /* ── Metrics ── */
-  .metric-card {
-    background: #FFFFFF;
-    border: 0.5px solid #D6D3CA;
-    border-radius: 8px;
-    padding: 10px 12px;
-  }
-  .metric-label   { font-size: 10px; color: #666560; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 3px; }
-  .metric-value   { font-size: 20px; font-weight: 500; color: #1A1A18; margin-bottom: 2px; }
-  .metric-sub     { font-size: 10px; color: #888480; }
-  .metric-up      { color: #2D6A0F; }
-  .metric-down    { color: #7A1F1F; }
-  .metric-warn    { color: #7A4A0A; }
-  .metric-neutral { color: #1A1A18; }
-
-  /* ── Section headers ── */
-  .section-header {
-    font-size: 11px; font-weight: 500; color: #888480;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    border-bottom: 0.5px solid #D6D3CA;
-    padding-bottom: 5px; margin: 18px 0 10px;
-  }
-
-  /* ── IPO cards ── */
-  .ipo-card {
-    background: #FFFFFF;
-    border: 0.5px solid #D6D3CA;
-    border-radius: 8px;
-    padding: 10px 12px;
-    height: 100%;
-  }
-  .ipo-title { font-size: 12px; font-weight: 500; color: #1A1A18; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
-  .ipo-row   { display: flex; justify-content: space-between; font-size: 10px; color: #888480; margin-bottom: 3px; border-bottom: 0.5px solid #ECEAE4; padding-bottom: 3px; }
-  .ipo-row span:last-child { color: #1A1A18; font-weight: 500; }
-
-  /* ── Badges ── */
-  .badge      { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 500; }
-  .badge-live { background: #FCEBEB; color: #791F1F; }
-  .badge-oct  { background: #EEEDFE; color: #3C3489; }
-  .badge-2027 { background: #FAEEDA; color: #633806; }
-  .badge-green{ background: #EAF3DE; color: #27500A; }
-
-  /* ── Timeline grid ── */
-  .timeline-row {
-    display: grid;
-    grid-template-columns: 90px 1fr 1fr 1fr 1fr 1fr;
-    gap: 4px; margin-bottom: 3px; align-items: stretch; min-height: 44px;
-  }
-  .tl-date {
-    font-size: 11px; font-weight: 500; color: #888480;
-    display: flex; align-items: center; padding-right: 6px;
-    line-height: 1.3;
-  }
-  .tl-date .alert { color: #7A1F1F; font-size: 9px; font-weight: 600; display: block; }
-
-  /* ── Timeline cells ── */
-  .tl-cell {
-    border-radius: 6px; padding: 5px 7px;
-    font-size: 10.5px; line-height: 1.35;
-    display: flex; flex-direction: column; justify-content: center;
-  }
-  .tl-cell b    { font-weight: 500; font-size: 11px; display: block; margin-bottom: 1px; color: inherit; }
-  .tl-cell span { font-size: 10px; opacity: 0.85; }
-
-  .cell-ipo    { background: #EEEDFE; color: #3C3489; border: 0.5px solid #AFA9EC; }
-  .cell-macro  { background: #E6F1FB; color: #0C447C; border: 0.5px solid #85B7EB; }
-  .cell-401k   { background: #FAECE7; color: #712B13; border: 0.5px solid #F0997B; }
-  .cell-gold   { background: #FFF8E8; color: #854F0B; border: 0.5px solid #FAC775; }
-  .cell-india  { background: #EAF3DE; color: #27500A; border: 0.5px solid #97C459; }
-  .cell-danger { background: #FCEBEB; color: #791F1F; border: 0.5px solid #F09595; }
-  .cell-silver { background: #E1F5EE; color: #085041; border: 0.5px solid #5DCAA5; }
-  .cell-phase  { background: #F1EFE8; color: #2C2C2A; border: 0.5px solid #B4B2A9; }
-  .cell-warn   { background: #FAEEDA; color: #633806; border: 0.5px solid #FAC775; }
-
-  /* ── Phase pills ── */
-  .phase-pill {
-    display: inline-flex; align-items: center; gap: 8px;
-    border-radius: 6px; padding: 4px 10px;
-    font-size: 11px; font-weight: 500; margin-right: 6px; margin-bottom: 6px;
-  }
-  .phase-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-  .ph-vacuum  { background: #EEEDFE; color: #3C3489; border: 0.5px solid #AFA9EC; }
-  .ph-stress  { background: #FAEEDA; color: #633806; border: 0.5px solid #FAC775; }
-  .ph-rupture { background: #FCEBEB; color: #791F1F; border: 0.5px solid #F09595; }
-  .ph-reset   { background: #EAF3DE; color: #27500A; border: 0.5px solid #97C459; }
-
-  /* ── Note / warn boxes ── */
-  .note-box {
-    background: #FFFFFF; border: 0.5px solid #D6D3CA;
-    border-left: 2px solid #B4B2A9;
-    border-radius: 6px; padding: 8px 12px;
-    font-size: 10px; color: #666560; margin-top: 10px;
-  }
-  .warn-box {
-    background: #FFFBF0; border: 0.5px solid #FAC775;
-    border-left: 3px solid #E8940A;
-    border-radius: 6px; padding: 10px 14px;
-    font-size: 12px; color: #633806; margin-bottom: 14px;
-  }
-
-  /* ── Tabs ── */
-  .stTabs [data-baseweb="tab-list"] { background: #ECEAE4; border-radius: 8px; padding: 3px; gap: 3px; }
-  .stTabs [data-baseweb="tab"]      { background: transparent; color: #888480; border-radius: 6px; padding: 5px 14px; font-size: 13px; }
-  .stTabs [aria-selected="true"]    { background: #FFFFFF !important; color: #1A1A18 !important; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-
-  div[data-testid="stMarkdownContainer"] p { margin: 0; }
-  .stSpinner > div { color: #3C3489; }
-</style>
-""", unsafe_allow_html=True)
-
-
-# ── Data fetching ────────────────────────────────────────────────────────────
-
-@st.cache_data(ttl=300)
-def fetch_gold_historical():
-    """Fetch gold price history from GitHub datasets"""
-    try:
-        url = "https://raw.githubusercontent.com/datasets/gold-prices/master/data/monthly.csv"
-        r = requests.get(url, timeout=8)
-        df = pd.read_csv(io.StringIO(r.text))
-        df.columns = ['Date', 'Price']
-        df['Date'] = pd.to_datetime(df['Date'])
-        df = df[df['Date'] >= '2000-01-01'].copy()
-        return df
-    except Exception as e:
-        return None
-
-@st.cache_data(ttl=300)
-def fetch_sp500_historical():
-    """Fetch S&P 500 monthly data from vega datasets"""
-    try:
-        url = "https://raw.githubusercontent.com/vega/vega-datasets/main/data/sp500.csv"
-        r = requests.get(url, timeout=8)
-        df = pd.read_csv(io.StringIO(r.text))
-        df.columns = ['Date', 'Price']
-        df['Date'] = pd.to_datetime(df['Date'], format='%b %d %Y', errors='coerce')
-        df = df.dropna().sort_values('Date')
-        return df
-    except Exception as e:
-        return None
-
-@st.cache_data(ttl=300)
-def fetch_crude_historical():
-    """Use OWID energy dataset for crude oil proxy"""
-    # We'll construct synthetic crude based on known data points
-    # Since direct crude API blocked, we use known historical anchor points
-    dates = pd.date_range('2000-01-01', '2026-06-01', freq='MS')
-    # Rough WTI oil price history (monthly approximation)
-    oil_anchors = {
-        '2000-01': 27, '2001-01': 28, '2002-01': 19, '2003-01': 33,
-        '2004-01': 34, '2005-01': 47, '2006-01': 65, '2007-01': 58,
-        '2008-01': 91, '2008-07': 133, '2009-01': 41, '2010-01': 79,
-        '2011-01': 91, '2012-01': 100, '2013-01': 94, '2014-01': 95,
-        '2015-01': 47, '2016-01': 32, '2017-01': 52, '2018-01': 62,
-        '2019-01': 53, '2020-03': 20, '2020-01': 61, '2021-01': 52,
-        '2022-01': 83, '2022-06': 114, '2023-01': 76, '2024-01': 73,
-        '2025-01': 75, '2025-06': 68, '2026-01': 82, '2026-06': 89
-    }
-    anchor_df = pd.DataFrame([
-        {'Date': pd.to_datetime(k), 'Price': v}
-        for k, v in oil_anchors.items()
-    ]).sort_values('Date')
-    interp = anchor_df.set_index('Date').reindex(
-        pd.date_range(anchor_df['Date'].min(), anchor_df['Date'].max(), freq='MS')
-    ).interpolate('linear').reset_index()
-    interp.columns = ['Date', 'Price']
-    return interp
-
-@st.cache_data(ttl=300)
-def fetch_inr_historical():
-    """Construct USD/INR history from known anchor points"""
-    inr_anchors = {
-        '2000-01': 44.9, '2002-01': 48.2, '2004-01': 45.3, '2006-01': 44.1,
-        '2008-01': 39.4, '2008-07': 42.8, '2009-01': 48.9, '2010-01': 45.7,
-        '2011-01': 44.7, '2012-01': 52.6, '2013-07': 59.8, '2014-01': 62.5,
-        '2015-01': 63.1, '2016-01': 67.8, '2017-01': 67.7, '2018-10': 74.2,
-        '2019-01': 71.3, '2020-01': 71.3, '2020-04': 76.4, '2021-01': 73.1,
-        '2022-01': 74.5, '2022-10': 83.1, '2023-01': 81.9, '2024-01': 83.2,
-        '2025-01': 86.5, '2025-06': 84.1, '2025-12': 87.3,
-        '2026-01': 88.9, '2026-03': 91.2, '2026-06': 95.25
-    }
-    anchor_df = pd.DataFrame([
-        {'Date': pd.to_datetime(k), 'Rate': v}
-        for k, v in inr_anchors.items()
-    ]).sort_values('Date')
-    interp = anchor_df.set_index('Date').reindex(
-        pd.date_range(anchor_df['Date'].min(), anchor_df['Date'].max(), freq='MS')
-    ).interpolate('linear').reset_index()
-    interp.columns = ['Date', 'Rate']
-    return interp
-
-@st.cache_data(ttl=300)
-def get_live_prices():
+@st.cache_data(ttl=60)          # refresh every 60 seconds
+def fetch_gift_nifty():
     """
-    Attempt to get live prices. Falls back gracefully to last known values.
-    Returns dict with price data and source info.
+    Primary  : NSE International Exchange public quote API
+               (the same JSON endpoint Zerodha's page consumes).
+    Fallback 1: Zerodha page HTML parse (works when the static page
+               embeds the value server-side, e.g. off-hours).
+    Fallback 2: yfinance ^NSEI (Nifty 50 spot) as a rough proxy,
+               clearly labelled as such.
+
+    Returns a dict:
+        {
+            "price"  : float | None,
+            "open"   : float | None,
+            "high"   : float | None,
+            "low"    : float | None,
+            "change" : float | None,   # absolute
+            "pct"    : float | None,   # percent
+            "source" : str,            # where data came from
+            "ts"     : str,            # human-readable timestamp
+        }
     """
-    prices = {
-        'gold_usd':   {'value': 4139.0,  'change': '+0.3%', 'source': 'Known (Jun 12 2026)', 'status': 'known'},
-        'usd_inr':    {'value': 95.25,   'change': '+0.2%', 'source': 'Known (Jun 12 2026)', 'status': 'known'},
-        'crude_wti':  {'value': 89.4,    'change': '+1.1%', 'source': 'Estimated',            'status': 'estimated'},
-        'crude_brent':{'value': 92.8,    'change': '+0.9%', 'source': 'Estimated',            'status': 'estimated'},
-        'sp500':      {'value': 5821.0,  'change': '-0.8%', 'source': 'Estimated',            'status': 'estimated'},
-        'nifty':      {'value': 24350.0, 'change': '+0.4%', 'source': 'Estimated',            'status': 'estimated'},
-        'btc_usd':    {'value': 104200.0,'change': '-1.2%', 'source': 'Estimated',            'status': 'estimated'},
-        'us10y':      {'value': 4.68,    'change': '+0.04', 'source': 'Estimated',            'status': 'estimated'},
-        'gold_inr':   {'value': None,    'change': None,    'source': 'Derived',               'status': 'derived'},
+    result = dict(price=None, open=None, high=None, low=None,
+                  change=None, pct=None, source="", ts="")
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/html, */*",
+        "Referer": "https://zerodha.com/market/giftnifty/",
     }
-    # Derive gold in INR
-    gold_inr_val = prices['gold_usd']['value'] * prices['usd_inr']['value'] / 31.1035  # per gram
-    prices['gold_inr'] = {
-        'value': round(gold_inr_val, 0),
-        'change': 'derived',
-        'source': 'Gold × INR / 31.1',
-        'status': 'derived'
-    }
-    return prices
 
-@st.cache_data(ttl=600)
-def build_scenario_projections():
-    """Build forward scenario projections for key assets"""
-    today = pd.to_datetime('2026-06-12')
-    end   = pd.to_datetime('2029-01-01')
-    months = pd.date_range(today, end, freq='MS')
+    # ── Primary: NSE IX public API ──────────────────────────────────────
+    try:
+        nse_url = "https://www.nseindia.com/api/quote-derivative?symbol=GIFTNIFTY"
+        r = requests.get(nse_url, headers=headers, timeout=6)
+        if r.status_code == 200:
+            data = r.json()
+            info = data.get("info", {})
+            ltp  = info.get("lastPrice") or data.get("underlyingValue")
+            if ltp:
+                result.update(
+                    price  = float(ltp),
+                    open   = float(info.get("open",  ltp)),
+                    high   = float(info.get("dayHigh", ltp)),
+                    low    = float(info.get("dayLow",  ltp)),
+                    change = float(info.get("change",  0)),
+                    pct    = float(info.get("pChange", 0)),
+                    source = "NSE IX",
+                )
+                result["ts"] = datetime.datetime.now().strftime("%H:%M:%S")
+                return result
+    except Exception:
+        pass
 
-    def sigmoid_interp(x, x0, k=8):
-        return 1 / (1 + np.exp(-k * (x - x0)))
+    # ── Fallback 1: Zerodha page HTML ────────────────────────────────────
+    try:
+        r = requests.get(
+            "https://zerodha.com/market/giftnifty/",
+            headers=headers, timeout=8
+        )
+        if r.status_code == 200:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(r.text, "html.parser")
+            # Zerodha embeds JSON state in a <script id="__NEXT_DATA__"> tag
+            nxt = soup.find("script", {"id": "__NEXT_DATA__"})
+            if nxt:
+                payload = json.loads(nxt.string)
+                # Navigate into Next.js page props to find quote data
+                gn = (
+                    payload
+                    .get("props", {})
+                    .get("pageProps", {})
+                    .get("giftNifty", {})
+                )
+                ltp = gn.get("lastPrice") or gn.get("last")
+                if ltp:
+                    result.update(
+                        price  = float(ltp),
+                        open   = float(gn.get("open",  ltp)),
+                        high   = float(gn.get("high",  ltp)),
+                        low    = float(gn.get("low",   ltp)),
+                        change = float(gn.get("change", 0)),
+                        pct    = float(gn.get("pct",    0)),
+                        source = "Zerodha",
+                    )
+                    result["ts"] = datetime.datetime.now().strftime("%H:%M:%S")
+                    return result
+    except Exception:
+        pass
 
-    n = len(months)
-    t = np.linspace(0, 1, n)
+    # ── Fallback 2: yfinance (Nifty 50 spot as proxy) ───────────────────
+    try:
+        ticker  = yf.Ticker("^NSEI")
+        info    = ticker.fast_info
+        ltp     = float(info.last_price)
+        prev    = float(info.previous_close)
+        chg     = round(ltp - prev, 2)
+        pct     = round((chg / prev) * 100, 2) if prev else 0.0
+        hist    = ticker.history(period="1d", interval="1m")
+        open_   = float(hist["Open"].iloc[0])  if len(hist) else ltp
+        high_   = float(hist["High"].max())     if len(hist) else ltp
+        low_    = float(hist["Low"].min())      if len(hist) else ltp
+        result.update(
+            price  = ltp,
+            open   = open_,
+            high   = high_,
+            low    = low_,
+            change = chg,
+            pct    = pct,
+            source = "yFinance (Nifty 50 proxy — GIFT Nifty unavailable)",
+        )
+        result["ts"] = datetime.datetime.now().strftime("%H:%M:%S")
+    except Exception:
+        result["source"] = "Unavailable"
 
-    # Phase markers (0-1 range)
-    ph1_end   = 0.14  # Sep 2026
-    ph2_end   = 0.35  # Mar 2027
-    ph3_peak  = 0.50  # Jul 2027
-    ph4_start = 0.60  # Sep 2027
+    return result
 
-    # Gold USD scenario
-    base_gold = 4139
-    gold_base    = base_gold * (1 + 0.12 * t)  # slow grind
-    gold_rupture = base_gold * np.where(
-        t < ph1_end,  1 + 0.08*t/ph1_end,
-        np.where(t < ph2_end,
-            (1 + 0.08) * (1 - 0.05*sigmoid_interp(t, ph1_end+0.05)),
-            np.where(t < ph3_peak,
-                (1 + 0.03) + 0.75 * sigmoid_interp(t, (ph2_end+ph3_peak)/2, k=12),
-                1.78 - 0.15*(t - ph3_peak)/(1-ph3_peak)
+
+def render_gift_nifty_banner():
+    """Render a slim sticky-style GIFT Nifty ticker at the very top of the page."""
+    gn = fetch_gift_nifty()
+
+    price  = gn["price"]
+    chg    = gn["change"]
+    pct    = gn["pct"]
+    open_  = gn["open"]
+    high_  = gn["high"]
+    low_   = gn["low"]
+    src    = gn["source"]
+    ts     = gn["ts"]
+
+    if price is None:
+        st.warning("⚠️ GIFT Nifty data unavailable right now. Retrying in 60 s.")
+        return
+
+    is_up     = chg >= 0
+    arrow     = "▲" if is_up else "▼"
+    clr_main  = "#16a34a" if is_up else "#dc2626"   # green / red
+    clr_bg    = "#f0fdf4" if is_up else "#fef2f2"
+    clr_bdr   = "#22c55e" if is_up else "#f87171"
+    chg_sign  = "+" if is_up else ""
+
+    open_str  = f"{open_:,.2f}"  if open_  else "—"
+    high_str  = f"{high_:,.2f}"  if high_  else "—"
+    low_str   = f"{low_:,.2f}"   if low_   else "—"
+
+    st.markdown(f"""
+    <div style="
+        background:{clr_bg};
+        border:1px solid {clr_bdr};
+        border-left:4px solid {clr_main};
+        border-radius:8px;
+        padding:10px 18px;
+        margin-bottom:16px;
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        flex-wrap:wrap;
+        gap:8px;
+    ">
+      <!-- Left: label + price -->
+      <div style="display:flex;align-items:baseline;gap:12px;">
+        <span style="font-size:11px;font-weight:700;color:#374151;
+                     text-transform:uppercase;letter-spacing:0.07em;">
+          🇮🇳 GIFT Nifty
+        </span>
+        <span style="font-size:26px;font-weight:800;color:#111827;
+                     font-family:'Inter',sans-serif;letter-spacing:-0.5px;">
+          {price:,.2f}
+        </span>
+        <span style="font-size:15px;font-weight:700;color:{clr_main};">
+          {arrow} {chg_sign}{chg:,.2f} &nbsp;({chg_sign}{pct:.2f}%)
+        </span>
+      </div>
+
+      <!-- Right: OHLC + source + time -->
+      <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
+        <span style="font-size:11px;color:#6b7280;">
+          <b style="color:#374151;">O</b> {open_str} &nbsp;
+          <b style="color:#16a34a;">H</b> {high_str} &nbsp;
+          <b style="color:#dc2626;">L</b> {low_str}
+        </span>
+        <span style="font-size:10px;color:#9ca3af;">
+          📡 {src} &nbsp;·&nbsp; ⏱ {ts}
+        </span>
+        <a href="https://zerodha.com/market/giftnifty/" target="_blank"
+           style="font-size:10px;color:#6b7280;text-decoration:none;
+                  border:1px solid #d1d5db;border-radius:4px;
+                  padding:2px 8px;">
+          Zerodha ↗
+        </a>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ======================================================================
+# DASHBOARD 1: US Economy Pipeline
+# ======================================================================
+def render_us_economy_pipeline():
+    st.title("THE US ECONOMY")
+    st.subheader("The Monetary Pipeline Leading to Consumer Price Increases")
+    st.markdown("---")
+
+
+    # ---------------------------------------------------------
+    # BLS API key loader
+    # ---------------------------------------------------------
+    def load_bls_api_key(path="bls.secret"):
+        """Read the BLS registration key from a local secret file.
+
+        The file should contain just the key (optionally with surrounding
+        whitespace/newline). Returns None if the file is missing or empty.
+        """
+        try:
+            with open(path, "r") as f:
+                key = f.read().strip()
+            return key if key else None
+        except FileNotFoundError:
+            return None
+
+
+    BLS_API_KEY = load_bls_api_key()
+
+
+    # ---------------------------------------------------------
+    # 401(k) account config loader
+    # ---------------------------------------------------------
+    def load_account_config(path="account.json"):
+        """Read 401(k) ledger inputs from a local JSON config file.
+
+        Expected format:
+            {
+                "baseline_balance": 562450.00,
+                "total_contributions": 14500.00
+            }
+
+        Falls back to the previous hardcoded snapshot values if the file is
+        missing, unreadable, or malformed - the dashboard will still render,
+        but a warning is shown so it's obvious the numbers are stale defaults.
+        """
+        defaults = {"baseline_balance": 562450.00, "total_contributions": 14500.00}
+        try:
+            with open(path, "r") as f:
+                config = json.load(f)
+            return (
+                float(config.get("baseline_balance", defaults["baseline_balance"])),
+                float(config.get("total_contributions", defaults["total_contributions"])),
+                True,
             )
+        except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError):
+            return defaults["baseline_balance"], defaults["total_contributions"], False
+
+
+    @st.cache_data(ttl=1800)
+    def fetch_sp500_ytd_return():
+        try:
+            # Fetch data from start of the current calendar year to today
+            current_year = datetime.date.today().year
+            ticker = yf.Ticker("^GSPC")
+            hist = ticker.history(start=f"{current_year}-01-01")
+            if len(hist) >= 2:
+                jan_close = hist["Close"].iloc[0]
+                current_close = hist["Close"].iloc[-1]
+                ytd_return = ((current_close - jan_close) / jan_close) * 100
+                return round(ytd_return, 2)
+        except Exception:
+            pass
+        return 14.20  # Safe fallback to your Q1 snapshot default if API fails
+
+
+    # ---------------------------------------------------------
+    # Helper to compute the last N (year, month) pairs ending
+    # at the current month, in chronological order.
+    # ---------------------------------------------------------
+    def get_last_n_months(n=6, end_date=None):
+        if end_date is None:
+            end_date = datetime.date.today()
+        year, month = end_date.year, end_date.month
+        months = []
+        for _ in range(n):
+            months.append((year, month))
+            month -= 1
+            if month == 0:
+                month = 12
+                year -= 1
+        months.reverse()
+        return months
+
+
+    def month_label(year, month):
+        return f"{calendar.month_abbr[month]} {year}"
+
+
+    # ---------------------------------------------------------
+    # BLS Data Fetching Logic - last 6 months, computed dynamically
+    # ---------------------------------------------------------
+    @st.cache_data(ttl=3600)
+    def fetch_bls_data(api_key, n_months=6, buffer_months=3):
+        """Fetch BLS series data.
+
+        BLS releases run roughly 1-2 months behind the current calendar
+        month, so we request `n_months + buffer_months` of history and let
+        the caller pick the most recent window that actually has data,
+        rather than assuming the current calendar month is populated.
+        """
+        url = 'https://api.bls.gov/publicAPI/v1/timeseries/data/'
+
+        series_mapping = {
+            "WPSFD4131": "Producer Price Index",
+            "EIUIR": "Export Price Index",
+            "EIUIR000": "Import Price Index"
+        }
+
+        target_months = get_last_n_months(n_months + buffer_months)
+        years_needed = sorted({y for y, _ in target_months})
+        month_labels = [month_label(y, m) for y, m in target_months]
+
+        payload = {
+            "seriesid": list(series_mapping.keys()),
+            "startyear": str(years_needed[0]),
+            "endyear": str(years_needed[-1])
+        }
+
+        # Securely append key if provided
+        if api_key:
+            payload["registrationkey"] = api_key
+
+        try:
+            response = requests.post(url, json=payload, headers={'Content-type': 'application/json'})
+            json_data = response.json()
+
+            if json_data.get('status') != 'REQUEST_SUCCEEDED':
+                return None, month_labels
+
+            # Build a lookup set of (year, month_number) we care about
+            target_set = set(target_months)
+
+            parsed_records = []
+            for series in json_data['Results']['series']:
+                series_id = series['seriesID']
+                index_name = series_mapping[series_id]
+
+                for item in series['data']:
+                    period = item['period']  # e.g. "M04"
+                    year = int(item['year'])
+
+                    if not period.startswith('M'):
+                        continue
+
+                    month_num = int(period[1:])
+                    if (year, month_num) not in target_set:
+                        continue
+
+                    value = float(item['value'])
+                    parsed_records.append({
+                        "Index Type": index_name,
+                        "Month": month_label(year, month_num),
+                        "Value": value
+                    })
+
+            if not parsed_records:
+                return None, month_labels
+
+            raw_df = pd.DataFrame(parsed_records)
+            pivot_df = raw_df.pivot(index="Index Type", columns="Month", values="Value").reset_index()
+
+            # Ensure all expected month columns exist and are in chronological order
+            for ml in month_labels:
+                if ml not in pivot_df.columns:
+                    pivot_df[ml] = pd.NA
+            pivot_df = pivot_df[["Index Type"] + month_labels]
+
+            return pivot_df, month_labels
+
+        except Exception:
+            return None, month_labels
+
+
+    # ---------------------------------------------------------
+    # Helper to calculate percentage change safely
+    # ---------------------------------------------------------
+    def get_pct_change(series, periods_back):
+        if len(series) > periods_back:
+            current = series.iloc[-1]
+            past = series.iloc[-(periods_back + 1)]
+            if past != 0:
+                return ((current - past) / past) * 100
+        return 0.0
+
+    # ---------------------------------------------------------
+    # Live Data Fetching Engine
+    # ---------------------------------------------------------
+    @st.cache_data(ttl=3600)
+    def fetch_pipeline_data():
+        end_date = datetime.date.today()
+        start_date = end_date - datetime.timedelta(days=180) # Past 6 months
+
+        metrics = {}
+
+        # 1. Market Data (DXY & CRB Proxy) - High Frequency
+        try:
+            dxy_df = yf.Ticker("DX-Y.NYB").history(period="6mo")['Close']
+            metrics['DXY'] = {
+                'latest': dxy_df.iloc[-1],
+                '3D': get_pct_change(dxy_df, 3),
+                '7D': get_pct_change(dxy_df, 7),
+                '1M': get_pct_change(dxy_df, 21), # ~21 trading days
+                '3M': get_pct_change(dxy_df, 63)  # ~63 trading days
+            }
+        except:
+            metrics['DXY'] = {'latest': 104.2, '3D': 0.1, '7D': -0.2, '1M': 0.5, '3M': -1.1}
+
+        try:
+            dbc_df = yf.Ticker("DBC").history(period="6mo")['Close']
+            metrics['CRB'] = {
+                'latest': dbc_df.iloc[-1],
+                '3D': get_pct_change(dbc_df, 3),
+                '7D': get_pct_change(dbc_df, 7),
+                '1M': get_pct_change(dbc_df, 21),
+                '3M': get_pct_change(dbc_df, 63)
+            }
+        except:
+            metrics['CRB'] = {'latest': 22.4, '3D': 0.4, '7D': 1.1, '1M': 3.2, '3M': 5.4}
+
+        # 2. Economic Indicators (FRED) - Low Frequency (Monthly/Quarterly)
+        # For these, 3D/7D changes are represented by their last available reporting interval
+        try:
+            cpi_df = web.DataReader("CPIAUCSL", "fred", start_date, end_date)['CPIAUCSL']
+            metrics['CPI'] = {'latest': cpi_df.iloc[-1], 'MoM': get_pct_change(cpi_df, 1), '3MoM': get_pct_change(cpi_df, 3)}
+        except:
+            metrics['CPI'] = {'latest': 312.1, 'MoM': 0.2, '3MoM': 0.8}
+
+        try:
+            ppi_df = web.DataReader("PPIACO", "fred", start_date, end_date)['PPIACO']
+            metrics['PPI'] = {'latest': ppi_df.iloc[-1], 'MoM': get_pct_change(ppi_df, 1), '3MoM': get_pct_change(ppi_df, 3)}
+        except:
+            metrics['PPI'] = {'latest': 240.5, 'MoM': 0.3, '3MoM': 1.1}
+
+        try:
+            m2_df = web.DataReader("M2SL", "fred", start_date, end_date)['M2SL']
+            metrics['M2'] = {'latest': m2_df.iloc[-1] / 1000, 'MoM': get_pct_change(m2_df, 1), '3MoM': get_pct_change(m2_df, 3)}
+        except:
+            metrics['M2'] = {'latest': 20.9, 'MoM': 0.1, '3MoM': -0.4}
+
+        try:
+            debt_df = web.DataReader("GFDEBTN", "fred", start_date, end_date)['GFDEBTN']
+            metrics['Debt'] = {'latest': debt_df.iloc[-1] / 1000000, 'QoQ': get_pct_change(debt_df, 1)}
+        except:
+            metrics['Debt'] = {'latest': 34.6, 'QoQ': 1.8}
+
+        return metrics
+
+    data = fetch_pipeline_data()
+
+    # ---------------------------------------------------------
+    # Clean, Uncluttered Layout Generation
+    # ---------------------------------------------------------
+
+    # Helper UI component for consistent Trend presentation
+    def display_trend_table(trend_dict):
+        st.markdown(
+            f"""
+            <table style="width:100%; font-size:12px; border:none; margin-top:5px;">
+                <tr style="background-color:rgba(0,0,0,0.05);">
+                    <th>3D</th><th>7D</th><th>1M</th><th>3M</th>
+                </tr>
+                <tr>
+                    <td style="color:{'green' if trend_dict['3D']>=0 else 'red'}">{trend_dict['3D']:.2f}%</td>
+                    <td style="color:{'green' if trend_dict['7D']>=0 else 'red'}">{trend_dict['7D']:.2f}%</td>
+                    <td style="color:{'green' if trend_dict['1M']>=0 else 'red'}">{trend_dict['1M']:.2f}%</td>
+                    <td style="color:{'green' if trend_dict['3M']>=0 else 'red'}">{trend_dict['3M']:.2f}%</td>
+                </tr>
+            </table>
+            """, unsafe_allow_html=True
         )
-    )
-    gold_bull = base_gold * np.where(
-        t < ph3_peak,
-        1 + 0.90*sigmoid_interp(t, ph2_end+0.05, k=10),
-        1.90 - 0.05*(t - ph3_peak)
-    )
 
-    # USD/INR scenario
-    base_inr = 95.25
-    inr_rupture = base_inr * np.where(
-        t < ph1_end, 1 + 0.05*t/ph1_end,
-        np.where(t < ph2_end, 1.05 + 0.02*(t-ph1_end)/(ph2_end-ph1_end),
-        np.where(t < ph3_peak, 1.07 - 0.10*sigmoid_interp(t, ph2_end+0.08, k=10),
-            0.97 - 0.18*(t-ph3_peak)/(1-ph3_peak)
-        ))
-    )
-    inr_rupture = np.clip(inr_rupture, 0.75, 1.12) * base_inr
+    # Creating the 5 Columns matching the layout arrows from image_94491e.jpg
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-    # Crude oil scenario
-    base_crude = 89.4
-    crude_rupture = base_crude * np.where(
-        t < ph1_end,  1 + 0.08*t/ph1_end,
-        np.where(t < ph2_end, 1.08 + 0.12*(t-ph1_end)/(ph2_end-ph1_end),
-        np.where(t < ph3_peak, 1.20 - 0.10*sigmoid_interp(t, ph3_peak-0.05),
-            1.10 + 0.05*np.sin(20*(t-ph3_peak))  # volatile
-        ))
-    )
+    with col1:
+        st.markdown("### 🏛️ Step 1\n**Structural Baseline**")
+        st.metric(label="National Debt", value=f"${data['Debt']['latest']:.1f} T", delta=f"{data['Debt']['QoQ']:.2f}% QoQ")
+        st.caption("Unfunded Liabilities: **$200+ T**")
+        st.caption("Annual Deficit: **~$1.9 T**")
 
-    # S&P 500 scenario
-    base_sp = 5821
-    sp_rupture = base_sp * np.where(
-        t < ph1_end,  1 + 0.06*t/ph1_end,
-        np.where(t < ph2_end, 1.06 - 0.02*(t-ph1_end)/(ph2_end-ph1_end),
-        np.where(t < ph3_peak,
-            1.04 - 0.40*sigmoid_interp(t, ph2_end+0.03, k=15),
-            0.65 + 0.20*sigmoid_interp(t, ph4_start, k=10)
-        ))
-    )
+    with col2:
+        st.markdown("### 🖨️ Step 2\n**Monetary Liquidity**")
+        st.metric(label="M2 Money Supply", value=f"${data['M2']['latest']:.1f} T", delta=f"{data['M2']['MoM']:.2f}% MoM")
+        st.caption(f"3-Month Shift: {data['M2']['3MoM']:.2f}%")
 
-    # Nifty scenario
-    base_nifty = 24350
-    nifty_rupture = base_nifty * np.where(
-        t < ph1_end,  1 + 0.04*t/ph1_end,
-        np.where(t < ph2_end, 1.04 - 0.01*(t-ph1_end)/(ph2_end-ph1_end),
-        np.where(t < ph3_peak,
-            1.03 - 0.32*sigmoid_interp(t, ph2_end+0.05, k=12),
-            0.72 + 0.35*sigmoid_interp(t, ph4_start+0.05, k=8)
-        ))
-    )
+    with col3:
+        st.markdown("### 🌎 Step 3\n**Market Indicators**")
 
-    # Gold in INR
-    gold_inr_rupture = gold_rupture * inr_rupture / 31.1035  # per gram
+        st.write("**CRB Commodity Index**")
+        display_trend_table(data['CRB'])
 
-    return pd.DataFrame({
-        'Date': months,
-        't': t,
-        'gold_base': gold_base,
-        'gold_rupture': gold_rupture,
-        'gold_bull': gold_bull,
-        'inr_rupture': inr_rupture,
-        'crude_rupture': crude_rupture,
-        'sp_rupture': sp_rupture,
-        'nifty_rupture': nifty_rupture,
-        'gold_inr_rupture': gold_inr_rupture,
-    })
+        st.write("**US Dollar Index (DXY)**")
+        display_trend_table(data['DXY'])
 
+    with col4:
+        st.markdown("### 🏭 Step 4\n**Supply-Side Costs**")
+        st.metric(label="Producer Price Index", value=f"{data['PPI']['latest']:.1f}", delta=f"{data['PPI']['MoM']:.2f}% MoM")
+        st.caption(f"3-Month Trajectory: +{data['PPI']['3MoM']:.2f}%")
 
-# ── Phase event markers ──────────────────────────────────────────────────────
-PHASE_EVENTS = [
-    {'date': '2026-06-12', 'label': 'SpaceX IPO\n$1.75T',      'color': '#818cf8', 'symbol': 'star'},
-    {'date': '2026-10-23', 'label': 'Anthropic IPO\n~$1T',     'color': '#c084fc', 'symbol': 'star'},
-    {'date': '2026-11-03', 'label': 'US Midterms',              'color': '#60a5fa', 'symbol': 'triangle-up'},
-    {'date': '2026-12-15', 'label': 'SpaceX lockup\nexpiry',   'color': '#f87171', 'symbol': 'x'},
-    {'date': '2027-04-23', 'label': 'Anthropic\nlockup expiry','color': '#f87171', 'symbol': 'x'},
-    {'date': '2027-06-15', 'label': 'Fed decision\npoint',     'color': '#fbbf24', 'symbol': 'diamond'},
-    {'date': '2027-09-01', 'label': 'Fed prints\n(projected)', 'color': '#4ade80', 'symbol': 'circle'},
-    {'date': '2028-03-01', 'label': 'USD rebase\n-30% INR',    'color': '#34d399', 'symbol': 'triangle-down'},
-]
-
-IPO_DATA = [
-    {
-        'name': 'SpaceX / xAI', 'badge': 'LIVE TODAY', 'badge_class': 'badge-live',
-        'rows': [
-            ('Ticker', 'SPCX · Nasdaq'),
-            ('IPO price', '$135 / share'),
-            ('Valuation', '$1.75 trillion'),
-            ('2025 Revenue', '$18.67B'),
-            ('Profitability', 'Unproven at scale'),
-            ('Lockup expiry', '~Dec 2026 (~180d)'),
-            ('Key risk', 'Dual-class · Musk control'),
-            ('xAI merged', 'Feb 2026 all-stock deal'),
-        ]
-    },
-    {
-        'name': 'Anthropic', 'badge': 'OCT 2026', 'badge_class': 'badge-oct',
-        'rows': [
-            ('S-1 filed', 'Jun 1, 2026 (confidential)'),
-            ('Target listing', 'Oct 23, 2026'),
-            ('Series H valuation', '$965B → ~$1T+ IPO'),
-            ('ARR (May 2026)', '$47B run-rate (5× in 5mo)'),
-            ('First op. profit', 'Q2 2026 projected'),
-            ('Lockup expiry', '~Apr 2027 (THE SIGNAL)'),
-            ('Lead banks', 'Goldman · JPMorgan · MS'),
-            ('Key risk', 'Compute cost / SEC review'),
-        ]
-    },
-    {
-        'name': 'OpenAI', 'badge': '2027', 'badge_class': 'badge-2027',
-        'rows': [
-            ('S-1 filed', 'Jun 8, 2026 (confidential)'),
-            ('Target listing', 'Sep–Dec 2026 or 2027'),
-            ('Valuation', '$730B–$1T+'),
-            ('2025 ARR', '$20B+'),
-            ('2026 loss (proj.)', '$14B GAAP ($25B full)'),
-            ('Profitable by', '~2030 (CFO guidance)'),
-            ('Add. funding needed', '$207B by 2030 (HSBC)'),
-            ('Key risk', 'Losses, restructuring'),
-        ]
-    },
-]
-
-TIMELINE_ROWS = [
-    {
-        'period': 'Jun 2026\nTODAY',
-        'alert': True,
-        'cells': [
-            ('cell-ipo',    'SpaceX IPO live',     'SPCX lists $1.75T. Largest IPO in history. xAI merged in.'),
-            ('cell-macro',  'Iran war inflation',  'CPI 4%+, front-end rates under pressure. Warsh paralysed.'),
-            ('cell-401k',   '$141K avg, ↓4%',      'Q1 2026 Fidelity data. First cracks. Loan withdrawals rising.'),
-            ('cell-gold',   'Gold $4,139 / INR 95.25', 'Stress already here. Accumulate SGBs now. Reduce US exposure.'),
-            ('cell-india',  'Accumulate phase',    'SGBs aggressively. Exit IT stocks. Build cash dry powder.'),
-        ]
-    },
-    {
-        'period': 'Jul–Sep 2026',
-        'alert': False,
-        'cells': [
-            ('cell-ipo',    'AI melt-up',          'Anthropic IPO hype lifts Nvidia, MSFT, GOOGL. FOMO max.'),
-            ('cell-macro',  'Fed paralysed',       'Won\'t hike into midterms. Warsh "disinflationary" narrative.'),
-            ('cell-401k',   'Brief recovery',      'AI rally lifts 401(k) briefly. False sense of safety.'),
-            ('cell-gold',   'Gold grinds up',      'INR ~92–97. Use the rally to EXIT Indian IT stocks.'),
-            ('cell-india',  'EXIT equities',       'Sell US-facing exposure into AI rally. These are gift prices.'),
-        ]
-    },
-    {
-        'period': 'Oct 2026\n🚨 RED ALERT',
-        'alert': True,
-        'cells': [
-            ('cell-ipo',    'Anthropic IPO',       '~$1T+ valuation. Peak AI narrative. Maximum global FOMO.'),
-            ('cell-macro',  'Midterms Nov 2026',   'Every policy lever pulled. Political liquidity injections.'),
-            ('cell-401k',   'Peak balances',       '40% S&P = 10 AI stocks. Concentration at extremes.'),
-            ('cell-gold',   'Gold $4,500+?',       'Max defense. SGBs + physical. IPO = top signal, not opportunity.'),
-            ('cell-india',  'MAX DEFENSE',         'Oct 1 = full defensive. Gold 45%, Cash 30%, Equity 20%.'),
-        ]
-    },
-    {
-        'period': 'Nov–Dec 2026',
-        'alert': False,
-        'cells': [
-            ('cell-ipo',    'OpenAI S-1 public',   'Files ~Aug, lists Sep–Dec. $14–25B loss disclosed. Market shock.'),
-            ('cell-macro',  'Midterm results',     'Political cover fades post-election. Bond stress resumes.'),
-            ('cell-401k',   'Deceptive calm',      'Lockups not expired. People complacent. False floor.'),
-            ('cell-gold',   'Hold gold firm',      'This period will feel like you\'re wrong. You are NOT.'),
-            ('cell-india',  'Do nothing',          'Hold position. Add gold on any weakness. Watch SPCX closely.'),
-        ]
-    },
-    {
-        'period': 'Jan–Mar 2027',
-        'alert': False,
-        'cells': [
-            ('cell-ipo',    'Earnings reality',    'SpaceX Q3/Q4 + Anthropic first 2 public quarters. Gap visible.'),
-            ('cell-macro',  'Bond stress builds',  'Debt maturity wall. Japan/Korea EM pricing worsens.'),
-            ('cell-401k',   'Volatility rising',   '$10–50K swings per week. Anxiety builds among retirees.'),
-            ('cell-gold',   'Gold $4,800+?',       'INR ~97–101. Gold INR flat to up. Keep all gold.'),
-            ('cell-india',  'Watchlist ready',     'Finalise quality India names. Cash dry powder at maximum.'),
-        ]
-    },
-    {
-        'period': 'Apr 2027\n⚠ THE SIGNAL',
-        'alert': True,
-        'cells': [
-            ('cell-danger', 'Lockup expiry',       'Anthropic: Google, Amazon, employees ALL can sell. Structural.'),
-            ('cell-danger', 'Cascade begins',      '"If Anthropic can\'t monetise, who can?" Nvidia guidance cut.'),
-            ('cell-401k',   'Balances crater',     '40% S&P concentration = brutal 401(k) loss. Forced withdrawals.'),
-            ('cell-gold',   'Gold dips briefly',   'Margin call selling. INR 99–103. Gold INR flat. HOLD. DON\'T SELL.'),
-            ('cell-india',  'Nifty -20%+',         'FII outflows. INR 99–103. Deploy 1st tranche of equity (10–15%).'),
-        ]
-    },
-    {
-        'period': 'May–Jun 2027',
-        'alert': False,
-        'cells': [
-            ('cell-danger', 'Bond contagion',      'Treasuries sold not bought. 10Y spikes. Everything liquidated.'),
-            ('cell-danger', 'Fed choice point',    'Dollar or bonds? Warsh must decide. Extreme volatility.'),
-            ('cell-401k',   'Retirement crisis',   'Boomers near retirement forced to sell at lows. Amplifies crash.'),
-            ('cell-gold',   'Gold recovers',       'Fed signals printing. Gold starts explosive move. INR 101–106.'),
-            ('cell-india',  '2nd tranche',         'Nifty -30–35%. Add domestic: FMCG, pharma, utilities, PSU banks.'),
-        ]
-    },
-    {
-        'period': 'Jul–Sep 2027\n🖨 FED PRINTS',
-        'alert': True,
-        'cells': [
-            ('cell-ipo',    'AI reset',            'SpaceX may survive (rockets real). Anthropic/OpenAI 25x→8x rev.'),
-            ('cell-macro',  'QE / YCC announced',  'Fed buys bonds. Dollar collapses. New monetary framework talk.'),
-            ('cell-401k',   'Permanent damage',    'Early retirees locked in losses. Social Security stress narrative.'),
-            ('cell-gold',   'Gold EXPLODES',       '$5,500–$7,000? INR recovering 95→88. Gold INR ₹480K–₹600K. HOLD.'),
-            ('cell-india',  '3rd tranche',         'Nifty bottoming. Quality mid-cap India. Build silver aggressively.'),
-        ]
-    },
-    {
-        'period': 'H2 2027–2028',
-        'alert': False,
-        'cells': [
-            ('cell-phase',  'Stabilisation',       'Surviving AI cos trade on actual earnings. Dot-com survivors.'),
-            ('cell-macro',  'Dollar rebases 30%',  'INR strengthens 100→70–75. De-dollarisation accelerates.'),
-            ('cell-401k',   'Policy response',     '401(k) bailout political pressure. Inflationary. Validates thesis.'),
-            ('cell-gold',   'EXIT GOLD NOW',       'INR strong = gold INR falls. Sell before INR hits 75. Rotate.'),
-            ('cell-india',  'Full India equity',   'FII money floods back. INR+Nifty double tailwind. Generational.'),
-        ]
-    },
-    {
-        'period': '2028+',
-        'alert': False,
-        'cells': [
-            ('cell-silver', 'Silver peaks late',   'Gold/silver ratio 88→45. Silver $130–150. Exits AFTER gold.'),
-            ('cell-macro',  'New cycle',           'India structural winner. RBI gold reserves = strong INR backing.'),
-            ('cell-401k',   'US consumption shock','Boomers poorer. US recession deepens. India domestic shines.'),
-            ('cell-gold',   '5–10% permanent',     'Keep small gold forever (SGBs for 2.5% yield). Rest → India equity.'),
-            ('cell-india',  'Compound India',      'Domestic consumption. Pharma. Power infra. 5–10yr holding.'),
-        ]
-    },
-]
-
-PORTFOLIO_PHASES = {
-    'Now – Sep 2026': {'Gold/SGBs': 35, 'INR Cash': 25, 'India Equity': 30, 'Silver': 10},
-    'Oct 2026 – Mar 2027': {'Gold/SGBs': 45, 'INR Cash': 30, 'India Equity': 20, 'Silver': 5},
-    'Apr – Jun 2027': {'Gold/SGBs': 50, 'INR Cash': 35, 'India Equity': 10, 'Silver': 5},
-    'H2 2027': {'Gold/SGBs': 35, 'INR Cash': 15, 'India Equity': 35, 'Silver': 15},
-    '2028+': {'Gold/SGBs': 25, 'INR Cash': 15, 'India Equity': 45, 'Silver': 15},
-}
-
-
-# ── App layout ───────────────────────────────────────────────────────────────
-
-st.markdown("<h1 style='font-size:22px;font-weight:500;color:#1A1A18;margin-bottom:4px;letter-spacing:-0.2px;'>AI IPO Macro Dashboard</h1>", unsafe_allow_html=True)
-st.markdown("<p style='font-size:12px;color:#888480;margin-bottom:16px;letter-spacing:0.02em;'>AI bubble · sovereign debt · India positioning &nbsp;·&nbsp; Updated Jun 12, 2026</p>", unsafe_allow_html=True)
-
-# Warn box
-st.markdown("""
-<div class='warn-box'>
-⚠ SpaceX (SPCX) began trading today — June 12, 2026 — at $135/share · $1.75T valuation. The AI vacuum phase is no longer theoretical. USD/INR is already at 95.25 — stress rupture scenario is weeks away, not months.
-</div>
-""", unsafe_allow_html=True)
-
-# Fetch data
-with st.spinner("Loading market data..."):
-    prices     = get_live_prices()
-    gold_hist  = fetch_gold_historical()
-    sp500_hist = fetch_sp500_historical()
-    inr_hist   = fetch_inr_historical()
-    crude_hist = fetch_crude_historical()
-    scenarios  = build_scenario_projections()
-
-
-# ── Live price metrics ───────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>Live market snapshot</div>", unsafe_allow_html=True)
-
-cols = st.columns(8)
-metric_defs = [
-    ('Gold USD',     'gold_usd',    '$',    '',    'metric-warn'),
-    ('USD / INR',    'usd_inr',     '₹',    '',    'metric-down'),
-    ('Gold / INR*',  'gold_inr',    '₹',    '/g',  'metric-warn'),
-    ('Crude WTI',    'crude_wti',   '$',    '/bbl','metric-warn'),
-    ('Crude Brent',  'crude_brent', '$',    '/bbl','metric-warn'),
-    ('S&P 500',      'sp500',       '',     '',    'metric-neutral'),
-    ('Nifty 50',     'nifty',       '',     '',    'metric-neutral'),
-    ('US 10Y Yield', 'us10y',       '',     '%',   'metric-down'),
-]
-for col, (label, key, prefix, suffix, cls) in zip(cols, metric_defs):
-    with col:
-        p = prices[key]
-        v = p['value']
-        fmt = f"{prefix}{v:,.2f}{suffix}" if isinstance(v, float) else str(v)
-        if key == 'gold_inr':
-            fmt = f"₹{v:,.0f}/g"
-        st.markdown(f"""
-        <div class='metric-card'>
-          <div class='metric-label'>{label}</div>
-          <div class='metric-value {cls}'>{fmt}</div>
-          <div class='metric-sub'>{p['change']} · {p['source']}</div>
-        </div>""", unsafe_allow_html=True)
-
-
-# ── IPO pipeline cards ───────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>IPO pipeline — confirmed & expected</div>", unsafe_allow_html=True)
-c1, c2, c3 = st.columns(3)
-for col, ipo in zip([c1, c2, c3], IPO_DATA):
-    with col:
-        rows_html = ''.join(
-            f"<div class='ipo-row'><span>{r[0]}</span><span>{r[1]}</span></div>"
-            for r in ipo['rows']
+    with col5:
+        st.markdown("### 🛒 Step 5\n**End Impact**")
+        # Clean CSS box highlighting the final destination of the pipeline
+        st.markdown(
+            f"""
+            <div style="background-color:#2b2b2b; padding:15px; border-radius:8px; text-align:center; color:white; border-left: 6px solid #ff4b4b;">
+                <p style="margin:0; font-size:12px; font-weight:bold; color:#ff4b4b;">CONSUMER PRICES (CPI)</p>
+                <p style="margin:5px 0; font-size:28px; font-weight:bold;">+{data['CPI']['MoM']:.2f}%</p>
+                <p style="margin:0; font-size:11px; opacity:0.8;">Latest MoM Print</p>
+                <p style="margin:2px 0 0 0; font-size:11px; opacity:0.8;">3-Month Trend: {data['CPI']['3MoM']:.2f}%</p>
+            </div>
+            """,
+            unsafe_allow_html=True
         )
-        st.markdown(f"""
-        <div class='ipo-card'>
-          <div class='ipo-title'><span class='badge {ipo['badge_class']}'>{ipo['badge']}</span>{ipo['name']}</div>
-          {rows_html}
-        </div>""", unsafe_allow_html=True)
 
 
-# ── Charts ───────────────────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>Charts — historical + scenario projections</div>", unsafe_allow_html=True)
+    # ── Live 401(k) Account Status Box ────────────────────────────────────────────
+    st.markdown("""<style>
+    .account-box { background: #F9FAFB; padding: 20px; border-radius: 8px; border: 1px solid #E5E7EB; margin-top: 15px; margin-bottom: 20px; }
+    .account-title { font-size: 14px; color: #111827; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+    .k-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .k-card { background: #FFFFFF; padding: 14px; border-radius: 6px; border: 1px solid #E5E7EB; text-align: left; }
+    .k-label { font-size: 10.5px; color: #6B7280; font-weight: 500; text-transform: uppercase; margin-bottom: 2px; }
+    .k-value { font-size: 18px; color: #111827; font-weight: 700; }
+    .k-green { color: #10B981; font-weight: 600; font-size: 12px; margin-top: 2px; }
+    </style>""", unsafe_allow_html=True)
+    sp500_ytd = fetch_sp500_ytd_return()
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📈 Gold & Crude", "💱 USD/INR", "📊 Equities", "🇮🇳 Gold in INR", "📋 Portfolio allocation"
-])
+    # Core Ledger Math Variables - loaded from account.json
+    baseline_balance, total_contributions, account_config_loaded = load_account_config()
+    if not account_config_loaded:
+        st.sidebar.warning("account.json not found or invalid - using stale default ledger values.")
 
-CHART_THEME = dict(
-    paper_bgcolor='rgba(0,0,0,0)',
-    plot_bgcolor='#FFFFFF',
-    font=dict(family='Inter', color='#666560', size=11),
-    xaxis=dict(gridcolor='#ECEAE4', linecolor='#D6D3CA', showgrid=True),
-    yaxis=dict(gridcolor='#ECEAE4', linecolor='#D6D3CA', showgrid=True),
-    legend=dict(bgcolor='rgba(255,255,255,0.9)', bordercolor='#D6D3CA'),
-    margin=dict(l=50, r=20, t=30, b=40),
-    hovermode='x unified',
-)
+    # Dynamically compounding return parameters based on live market context
+    market_gains = baseline_balance * (sp500_ytd / 100)
+    current_balance = baseline_balance + total_contributions + market_gains
 
-def add_event_markers(fig, y_frac=0.92, row=None, col=None):
-    kwargs = {}
-    if row is not None:
-        kwargs = dict(row=row, col=col)
-    for ev in PHASE_EVENTS:
-        fig.add_vline(
-            x=pd.to_datetime(ev['date']),
-            line_width=1, line_dash='dot', line_color=ev['color'],
-            opacity=0.5, **kwargs
-        )
-    return fig
-
-with tab1:
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.6, 0.4],
-                        subplot_titles=('Gold price (USD/oz)', 'Crude oil WTI (USD/bbl)'),
-                        vertical_spacing=0.08)
-
-    # Historical gold
-    if gold_hist is not None:
-        fig.add_trace(go.Scatter(
-            x=gold_hist['Date'], y=gold_hist['Price'],
-            name='Gold historical', line=dict(color='#fbbf24', width=1.5),
-            fill='tozeroy', fillcolor='rgba(251,191,36,0.06)'
-        ), row=1, col=1)
-
-    # Scenario projections — gold
-    fig.add_trace(go.Scatter(
-        x=scenarios['Date'], y=scenarios['gold_base'],
-        name='Base (slow grind)', line=dict(color='#6366f1', width=1.5, dash='dot')
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=scenarios['Date'], y=scenarios['gold_rupture'],
-        name='Rupture scenario', line=dict(color='#f87171', width=2.5)
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=scenarios['Date'], y=scenarios['gold_bull'],
-        name='Bull scenario', line=dict(color='#4ade80', width=1.5, dash='dash')
-    ), row=1, col=1)
-
-    # Current price marker
-    fig.add_hline(y=4139, line_width=1, line_color='#fbbf24',
-                  line_dash='dash', row=1, col=1,
-                  annotation_text=' Current: $4,139', annotation_font_color='#fbbf24')
-
-    # Crude historical
-    fig.add_trace(go.Scatter(
-        x=crude_hist['Date'], y=crude_hist['Price'],
-        name='Crude WTI historical', line=dict(color='#fb923c', width=1.5),
-        fill='tozeroy', fillcolor='rgba(251,146,60,0.06)'
-    ), row=2, col=1)
-    fig.add_trace(go.Scatter(
-        x=scenarios['Date'], y=scenarios['crude_rupture'],
-        name='Crude rupture scenario', line=dict(color='#f87171', width=2, dash='dash')
-    ), row=2, col=1)
-
-    fig.add_hline(y=89.4, line_width=1, line_color='#fb923c',
-                  line_dash='dash', row=2, col=1,
-                  annotation_text=' Current: ~$89', annotation_font_color='#fb923c')
-
-    add_event_markers(fig, row=1, col=1)
-    add_event_markers(fig, row=2, col=1)
-
-    fig.update_layout(**CHART_THEME, height=550)
-    fig.update_annotations(font_color='#666560', font_size=11)
-    fig.add_vrect(x0='2027-04-01', x1='2027-09-30',
-                  fillcolor='rgba(248,113,113,0.07)',
-                  annotation_text='Rupture window', annotation_position='top left',
-                  annotation_font_color='#f87171', annotation_font_size=10,
-                  line_width=0)
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("<div class='note-box'>Gold historical data: datasets/gold-prices (GitHub). Crude oil: estimated from known anchor points (WTI monthly). Scenario projections are analytical estimates, not forecasts.</div>", unsafe_allow_html=True)
-
-with tab2:
-    fig2 = go.Figure()
-
-    fig2.add_trace(go.Scatter(
-        x=inr_hist['Date'], y=inr_hist['Rate'],
-        name='USD/INR historical', line=dict(color='#60a5fa', width=1.5),
-        fill='tozeroy', fillcolor='rgba(96,165,250,0.06)'
-    ))
-    fig2.add_trace(go.Scatter(
-        x=scenarios['Date'], y=scenarios['inr_rupture'],
-        name='Rupture scenario', line=dict(color='#f87171', width=2.5)
-    ))
-
-    # Zones
-    fig2.add_hline(y=95.25, line_color='#fbbf24', line_dash='dash', line_width=1,
-                   annotation_text=' Today: 95.25', annotation_font_color='#fbbf24')
-    fig2.add_hrect(y0=95, y1=105, fillcolor='rgba(248,113,113,0.08)',
-                   line_width=0,
-                   annotation_text='Phase 1 rupture zone (95–105)',
-                   annotation_font_color='#f87171', annotation_font_size=10,
-                   annotation_position='top right')
-    fig2.add_hrect(y0=70, y1=80, fillcolor='rgba(74,222,128,0.06)',
-                   line_width=0,
-                   annotation_text='USD rebase zone (70–80)',
-                   annotation_font_color='#27500A', annotation_font_size=10,
-                   annotation_position='bottom right')
-
-    add_event_markers(fig2)
-    fig2.update_layout(**CHART_THEME, height=420,
-                       title=dict(text='USD/INR — historical + rupture scenario',
-                                  font=dict(color='#1A1A18', size=13)))
-    fig2.add_vrect(x0='2027-04-01', x1='2027-09-30',
-                   fillcolor='rgba(248,113,113,0.07)',
-                   annotation_text='Rupture window',
-                   annotation_font_color='#f87171', annotation_font_size=10,
-                   line_width=0)
-    st.plotly_chart(fig2, use_container_width=True)
-
-    # INR decision table
-    st.markdown("""
-    <div class='section-header' style='margin-top:8px;'>INR action guide</div>
-    <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px;'>
-      <div class='tl-cell cell-gold' style='min-height:60px;'><b>Hold INR when</b><span>System functioning · RBI defending · Current a/c near balance · Post Fed print stabilisation</span></div>
-      <div class='tl-cell cell-danger' style='min-height:60px;'><b>Hold Gold when</b><span>System under stress · FII outflows · Yields breaking out · Uncertain phase · Basically 2026–2027</span></div>
-      <div class='tl-cell cell-silver' style='min-height:60px;'><b>The key rule</b><span>USD weak + INR strong = gold DOWN in INR. Exit gold BEFORE full INR rebase. Window is weeks not years.</span></div>
+    st.markdown(f"""
+    <div class='account-box'>
+        <div class='account-title'>🇺🇸 401(k) Plan Account Status Summary & Risk Vector Ledger</div>
+        <div class='k-grid'>
+            <div class='k-card'>
+                <div class='k-label'>Total Vested Balance (USD)</div>
+                <div class='k-value'>${current_balance:,.2f}</div>
+                <div class='k-green'>⚡ Fully Vested Assets</div>
+            </div>
+            <div class='k-card'>
+                <div class='k-label'>YTD Contribution Allocation</div>
+                <div class='k-value'>${total_contributions:,.2f}</div>
+                <div class='k-green'>Max Out Track Active</div>
+            </div>
+            <div class='k-card'>
+                <div class='k-label'>Core Account Return Profile</div>
+                <div class='k-value'>+{sp500_ytd}%</div>
+                <div class='k-green'>📈 Tracking S&P 500 Index</div>
+            </div>
+            <div class='k-card'>
+                <div class='k-label'>Asset Growth Component</div>
+                <div class='k-value'>+${market_gains:,.2f}</div>
+                <div class='k-green'>Market Compounding Value</div>
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-with tab3:
-    fig3 = make_subplots(rows=1, cols=2,
-                         subplot_titles=('S&P 500 scenario', 'Nifty 50 scenario'))
+    # ---------------------------------------------------------
+    # BLS Series - last 6 months of MoM % change, computed dynamically
+    # ---------------------------------------------------------
+    # WPSFD4131 / EIUIR / EIUIR000 come back from BLS as raw index *levels*
+    # (e.g. 267.7), not percentages. To show "MoM Performance" we need one
+    # extra month of history as a baseline and derive the % change ourselves.
+    df_full, extended_month_labels = fetch_bls_data(BLS_API_KEY, buffer_months=4)
 
-    if sp500_hist is not None:
-        fig3.add_trace(go.Scatter(
-            x=sp500_hist['Date'], y=sp500_hist['Price'],
-            name='S&P historical', line=dict(color='#60a5fa', width=1.5)
-        ), row=1, col=1)
+    df = None
+    months = None
 
-    fig3.add_trace(go.Scatter(
-        x=scenarios['Date'], y=scenarios['sp_rupture'],
-        name='S&P rupture', line=dict(color='#f87171', width=2.5)
-    ), row=1, col=1)
+    if df_full is not None:
+        # Find the latest month where this month AND the prior month both
+        # have data for all three series (needed to compute MoM % change).
+        # BLS typically lags 1-2 months behind the current calendar month.
+        anchor_idx = None
+        for i in range(len(extended_month_labels) - 1, 0, -1):
+            cur_col = extended_month_labels[i]
+            prev_col = extended_month_labels[i - 1]
+            if (cur_col in df_full.columns and prev_col in df_full.columns
+                    and df_full[cur_col].notna().all() and df_full[prev_col].notna().all()):
+                anchor_idx = i
+                break
 
-    # Nifty
-    nifty_anchors = {
-        '2015-01': 8808, '2016-01': 7600, '2017-01': 8186, '2018-01': 10906,
-        '2019-01': 10831,'2020-03': 7511, '2021-01': 14018,'2022-01': 17354,
-        '2023-01': 18105,'2024-01': 21731,'2025-01': 23169,'2026-01': 24800,
-        '2026-06': 24350
+        if anchor_idx is not None:
+            start_idx = max(0, anchor_idx - 6)  # one extra "baseline" month for pct change
+            window_labels = extended_month_labels[start_idx:anchor_idx + 1]
+            if len(window_labels) >= 2:
+                raw_window = df_full[["Index Type"] + window_labels].copy()
+
+                pct_df = raw_window[["Index Type"]].copy()
+                for j in range(1, len(window_labels)):
+                    cur_col = window_labels[j]
+                    prev_col = window_labels[j - 1]
+                    pct_df[cur_col] = ((raw_window[cur_col] - raw_window[prev_col]) / raw_window[prev_col]) * 100
+
+                months = window_labels[1:]
+                df = pct_df
+
+    if df is None:
+        months = [month_label(y, m) for y, m in get_last_n_months(6)]
+
+    latest_month = months[-1]
+    latest_month_short = latest_month.split(" ")[0]
+
+    # Fallback layer remains intact
+    if df is None:
+        st.sidebar.warning("BLS API limit reached, key missing/invalid, or no data available for the requested range. Showing local sample data.")
+        # NOTE: these sample values are illustrative placeholders only,
+        # not live data - used purely so the layout still renders.
+        fallback_values = {
+            "Producer Price Index": [0.6, 0.5, 0.4, 0.7, 1.1, 1.4],
+            "Export Price Index":   [1.9, 1.7, 1.6, 1.5, 2.4, 3.3],
+            "Import Price Index":   [1.0, 0.9, 0.8, 0.9, 1.4, 1.9],
+        }
+        fallback_data = {"Index Type": list(fallback_values.keys())}
+        for i, ml in enumerate(months):
+            fallback_data[ml] = [fallback_values[k][i] for k in fallback_values]
+        df = pd.DataFrame(fallback_data)
+
+    # Key Metrics Row
+    st.subheader(f"🚀 Latest Focus: {latest_month} Performance")
+    col1, col2, col3 = st.columns(3)
+
+    # Helper function to grab values dynamically from the DataFrame matrix
+    def get_val(idx_name, month_name):
+        return df.loc[df["Index Type"] == idx_name, month_name].values[0]
+
+    with col1:
+        st.metric(label=f"Producer Price Index ({latest_month_short})", value=f"{get_val('Producer Price Index', latest_month):.2f}%", delta="MoM Performance")
+    with col2:
+        st.metric(label=f"Export Price Index ({latest_month_short})", value=f"{get_val('Export Price Index', latest_month):.2f}%", delta="MoM Performance")
+    with col3:
+        st.metric(label=f"Import Price Index ({latest_month_short})", value=f"{get_val('Import Price Index', latest_month):.2f}%", delta="MoM Performance")
+
+    st.markdown("---")
+
+    left_chart_col, right_table_col = st.columns([2, 1])
+
+    with left_chart_col:
+        st.subheader("Live Trend Visualization (Last 6 Months)")
+        fig = go.Figure()
+        for index, row in df.iterrows():
+            fig.add_trace(go.Scatter(
+                x=months,
+                y=[row[m] for m in months],
+                mode='lines+markers',
+                name=row["Index Type"],
+                line=dict(width=3),
+                marker=dict(size=8)
+            ))
+        fig.update_layout(
+            xaxis_title="Reporting Period",
+            yaxis_title="MoM Growth (%)",
+            hovermode="x unified",
+            margin=dict(l=20, r=20, t=20, b=20),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with right_table_col:
+        st.subheader("Data Records (Live API)")
+        formatted_df = df.copy()
+        for col in months:
+            formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
+        st.dataframe(formatted_df, hide_index=True, use_container_width=True)
+
+        st.info("💡 **Developer Notice:** The API requests are managed via `st.cache_data` to ensure your app stays efficient and stays well within the BLS platform daily traffic limitations.")
+
+
+# ======================================================================
+# DASHBOARD 2: AI IPO Macro Dashboard
+# ======================================================================
+def render_ai_ipo_macro_dashboard():
+    # ── Load news validation data ─────────────────────────────────────────────────
+    def load_news_data():
+        # Look for news.json alongside the script, or in cwd
+        for path in [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'news.json'),
+            os.path.join(os.getcwd(), 'news.json'),
+            'news.json',
+        ]:
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    return json.load(f)
+        return {}
+
+    _raw_news = load_news_data()
+
+    # Flatten all phases into one dict keyed by cell code (A1, B2, etc.)
+    NEWS_OVERLAY = {}
+    for phase_data in _raw_news.values():
+        if isinstance(phase_data, dict):
+            for key, val in phase_data.items():
+                if isinstance(val, dict) and 'status' in val:
+                    NEWS_OVERLAY[key] = val
+
+    # Status → badge style mapping
+    STATUS_BADGE = {
+        'Validated 🟢':   ('background:#EAF3DE;color:#27500A;border:0.5px solid #97C459;', '✅'),
+        'Partial 🟡':     ('background:#FFF8E8;color:#854F0B;border:0.5px solid #FAC775;', '⚠️'),
+        'Too Early ⏳':   ('background:#F1EFE8;color:#666560;border:0.5px solid #B4B2A9;', '⏳'),
+        'Invalidated 🔴': ('background:#FCEBEB;color:#791F1F;border:0.5px solid #F09595;', '❌'),
     }
-    nifty_df = pd.DataFrame([
-        {'Date': pd.to_datetime(k), 'Price': v}
-        for k, v in nifty_anchors.items()
-    ]).sort_values('Date')
-    nifty_interp = nifty_df.set_index('Date').reindex(
-        pd.date_range(nifty_df['Date'].min(), nifty_df['Date'].max(), freq='MS')
-    ).interpolate('linear').reset_index()
-    nifty_interp.columns = ['Date', 'Price']
+    DEFAULT_BADGE = ('background:#F1EFE8;color:#888480;border:0.5px solid #D6D3CA;', '·')
 
-    fig3.add_trace(go.Scatter(
-        x=nifty_interp['Date'], y=nifty_interp['Price'],
-        name='Nifty historical', line=dict(color='#4ade80', width=1.5)
-    ), row=1, col=2)
-    fig3.add_trace(go.Scatter(
-        x=scenarios['Date'], y=scenarios['nifty_rupture'],
-        name='Nifty rupture', line=dict(color='#fb923c', width=2.5)
-    ), row=1, col=2)
+    def cell_key(row_idx, col_idx):
+        """Map row/col index to JSON key: col A–E, row 1–10"""
+        return f"{chr(65 + col_idx)}{row_idx + 1}"
 
-    add_event_markers(fig3, row=1, col=1)
-    add_event_markers(fig3, row=1, col=2)
+    def news_overlay_html(row_idx, col_idx):
+        key = cell_key(row_idx, col_idx)
+        data = NEWS_OVERLAY.get(key)
+        if not data:
+            return ''
+        status = data.get('status', '')
+        signal = data.get('real_world_signal', '')
+        divergence = data.get('thesis_divergence', '')
+        confidence = data.get('confidence', '')
+        style, icon = STATUS_BADGE.get(status, DEFAULT_BADGE)
+        show_div = '' if divergence in ('', 'None', 'None.') else f"<div style='margin-top:5px;padding-top:5px;border-top:0.5px solid rgba(0,0,0,0.1);font-size:9.5px;opacity:0.8;'><b>Divergence:</b> {divergence}</div>"
+        return f"""<div style='margin-top:6px;padding:5px 7px;border-radius:5px;font-size:10px;line-height:1.45;{style}'>
+    <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;'>
+      <span style='font-weight:600;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;'>{icon} {status}</span>
+      <span style='font-size:9px;opacity:0.7;'>conf: {confidence}</span>
+    </div>
+    <div style='font-size:10px;'>{signal}</div>{show_div}
+    </div>"""
 
-    fig3.add_vrect(x0='2027-04-01', x1='2027-09-30',
-                   fillcolor='rgba(248,113,113,0.07)', line_width=0, row=1, col=1)
-    fig3.add_vrect(x0='2027-04-01', x1='2027-09-30',
-                   fillcolor='rgba(248,113,113,0.07)', line_width=0, row=1, col=2)
 
-    fig3.update_layout(**CHART_THEME, height=420)
-    st.plotly_chart(fig3, use_container_width=True)
 
+    # ── Custom CSS — light theme matching HTML reference ─────────────────────────
     st.markdown("""
-    <div class='note-box'>
-    401(k) destruction mechanism: Top 10 S&P stocks = ~40% of index weight. All AI bets. A 50% AI complex drawdown = ~20–25% 401(k) loss mechanically, before panic selling amplifies it. Fidelity Q1 2026: avg $141K already down 4%. Political pressure to bail out will be the inflationary policy response that validates the gold thesis.
-    </div>""", unsafe_allow_html=True)
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
 
-with tab4:
-    fig4 = go.Figure()
+      /* ── Base ── */
+      html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+      .main { background-color: #F5F4F0; }
+      .block-container { padding: 1.5rem 2rem; max-width: 1400px; background: #F5F4F0; }
 
-    # Gold in INR — historical (gold_usd × inr)
-    if gold_hist is not None and inr_hist is not None:
-        gold_m = gold_hist.set_index('Date').resample('MS').last()
-        inr_m  = inr_hist.set_index('Date').resample('MS').last()
-        combined = gold_m.join(inr_m, how='inner', lsuffix='_gold', rsuffix='_inr')
-        combined.columns = ['gold_usd', 'usd_inr']
-        combined['gold_inr_gram'] = combined['gold_usd'] * combined['usd_inr'] / 31.1035
-        combined = combined.reset_index()
-        fig4.add_trace(go.Scatter(
-            x=combined['Date'], y=combined['gold_inr_gram'],
-            name='Gold in INR (historical, ₹/gram)',
-            line=dict(color='#fbbf24', width=2),
-            fill='tozeroy', fillcolor='rgba(251,191,36,0.06)'
-        ))
+      /* ── Metrics ── */
+      .metric-card {
+        background: #FFFFFF;
+        border: 0.5px solid #D6D3CA;
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .metric-label   { font-size: 10px; color: #666560; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 3px; }
+      .metric-value   { font-size: 20px; font-weight: 500; color: #1A1A18; margin-bottom: 2px; }
+      .metric-sub     { font-size: 10px; color: #888480; }
+      .metric-up      { color: #2D6A0F; }
+      .metric-down    { color: #7A1F1F; }
+      .metric-warn    { color: #7A4A0A; }
+      .metric-neutral { color: #1A1A18; }
 
-    fig4.add_trace(go.Scatter(
-        x=scenarios['Date'], y=scenarios['gold_inr_rupture'],
-        name='Gold INR rupture scenario (₹/gram)',
-        line=dict(color='#f87171', width=2.5)
-    ))
+      /* ── Section headers ── */
+      .section-header {
+        font-size: 11px; font-weight: 500; color: #888480;
+        text-transform: uppercase; letter-spacing: 0.06em;
+        border-bottom: 0.5px solid #D6D3CA;
+        padding-bottom: 5px; margin: 18px 0 10px;
+      }
 
-    current_gold_inr = 4139 * 95.25 / 31.1035
-    fig4.add_hline(y=current_gold_inr, line_color='#fbbf24', line_dash='dash',
-                   annotation_text=f' Today: ₹{current_gold_inr:,.0f}/g',
-                   annotation_font_color='#fbbf24')
+      /* ── IPO cards ── */
+      .ipo-card {
+        background: #FFFFFF;
+        border: 0.5px solid #D6D3CA;
+        border-radius: 8px;
+        padding: 10px 12px;
+        height: 100%;
+      }
+      .ipo-title { font-size: 12px; font-weight: 500; color: #1A1A18; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+      .ipo-row   { display: flex; justify-content: space-between; font-size: 10px; color: #888480; margin-bottom: 3px; border-bottom: 0.5px solid #ECEAE4; padding-bottom: 3px; }
+      .ipo-row span:last-child { color: #1A1A18; font-weight: 500; }
 
-    # Exit zones
-    fig4.add_vrect(x0='2027-07-01', x1='2027-12-31',
-                   fillcolor='rgba(74,222,128,0.07)',
-                   annotation_text='Gold INR EXIT WINDOW',
-                   annotation_font_color='#27500A', annotation_font_size=11,
-                   line_width=0)
-    fig4.add_vrect(x0='2027-04-01', x1='2027-07-01',
-                   fillcolor='rgba(248,113,113,0.07)',
-                   annotation_text='Hold — don\'t panic',
-                   annotation_font_color='#f87171', annotation_font_size=10,
-                   line_width=0)
+      /* ── Badges ── */
+      .badge      { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 500; }
+      .badge-live { background: #FCEBEB; color: #791F1F; }
+      .badge-oct  { background: #EEEDFE; color: #3C3489; }
+      .badge-2027 { background: #FAEEDA; color: #633806; }
+      .badge-green{ background: #EAF3DE; color: #27500A; }
 
-    add_event_markers(fig4)
-    fig4.update_layout(**CHART_THEME, height=420,
-                       title=dict(text='Gold price in INR (₹/gram) — the Indian investor view',
-                                  font=dict(color='#1A1A18', size=13)),
-                       yaxis_title='₹ per gram')
-    st.plotly_chart(fig4, use_container_width=True)
+      /* ── Timeline grid ── */
+      .timeline-row {
+        display: grid;
+        grid-template-columns: 90px 1fr 1fr 1fr 1fr 1fr;
+        gap: 4px; margin-bottom: 3px; align-items: stretch; min-height: 44px;
+      }
+      .tl-date {
+        font-size: 11px; font-weight: 500; color: #888480;
+        display: flex; align-items: center; padding-right: 6px;
+        line-height: 1.3;
+      }
+      .tl-date .alert { color: #7A1F1F; font-size: 9px; font-weight: 600; display: block; }
 
-    # Phase math
+      /* ── Timeline cells ── */
+      .tl-cell {
+        border-radius: 6px; padding: 5px 7px;
+        font-size: 10.5px; line-height: 1.35;
+        display: flex; flex-direction: column; justify-content: center;
+      }
+      .tl-cell b    { font-weight: 500; font-size: 11px; display: block; margin-bottom: 1px; color: inherit; }
+      .tl-cell span { font-size: 10px; opacity: 0.85; }
+
+      .cell-ipo    { background: #EEEDFE; color: #3C3489; border: 0.5px solid #AFA9EC; }
+      .cell-macro  { background: #E6F1FB; color: #0C447C; border: 0.5px solid #85B7EB; }
+      .cell-401k   { background: #FAECE7; color: #712B13; border: 0.5px solid #F0997B; }
+      .cell-gold   { background: #FFF8E8; color: #854F0B; border: 0.5px solid #FAC775; }
+      .cell-india  { background: #EAF3DE; color: #27500A; border: 0.5px solid #97C459; }
+      .cell-danger { background: #FCEBEB; color: #791F1F; border: 0.5px solid #F09595; }
+      .cell-silver { background: #E1F5EE; color: #085041; border: 0.5px solid #5DCAA5; }
+      .cell-phase  { background: #F1EFE8; color: #2C2C2A; border: 0.5px solid #B4B2A9; }
+      .cell-warn   { background: #FAEEDA; color: #633806; border: 0.5px solid #FAC775; }
+
+      /* ── Phase pills ── */
+      .phase-pill {
+        display: inline-flex; align-items: center; gap: 8px;
+        border-radius: 6px; padding: 4px 10px;
+        font-size: 11px; font-weight: 500; margin-right: 6px; margin-bottom: 6px;
+      }
+      .phase-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+      .ph-vacuum  { background: #EEEDFE; color: #3C3489; border: 0.5px solid #AFA9EC; }
+      .ph-stress  { background: #FAEEDA; color: #633806; border: 0.5px solid #FAC775; }
+      .ph-rupture { background: #FCEBEB; color: #791F1F; border: 0.5px solid #F09595; }
+      .ph-reset   { background: #EAF3DE; color: #27500A; border: 0.5px solid #97C459; }
+
+      /* ── Note / warn boxes ── */
+      .note-box {
+        background: #FFFFFF; border: 0.5px solid #D6D3CA;
+        border-left: 2px solid #B4B2A9;
+        border-radius: 6px; padding: 8px 12px;
+        font-size: 10px; color: #666560; margin-top: 10px;
+      }
+      .warn-box {
+        background: #FFFBF0; border: 0.5px solid #FAC775;
+        border-left: 3px solid #E8940A;
+        border-radius: 6px; padding: 10px 14px;
+        font-size: 12px; color: #633806; margin-bottom: 14px;
+      }
+
+      /* ── Tabs ── */
+      .stTabs [data-baseweb="tab-list"] { background: #ECEAE4; border-radius: 8px; padding: 3px; gap: 3px; }
+      .stTabs [data-baseweb="tab"]      { background: transparent; color: #888480; border-radius: 6px; padding: 5px 14px; font-size: 13px; }
+      .stTabs [aria-selected="true"]    { background: #FFFFFF !important; color: #1A1A18 !important; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+
+      div[data-testid="stMarkdownContainer"] p { margin: 0; }
+      .stSpinner > div { color: #3C3489; }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+    # ── Data fetching ────────────────────────────────────────────────────────────
+
+    @st.cache_data(ttl=300)
+    def fetch_gold_historical():
+        """Fetch gold price history from GitHub datasets"""
+        try:
+            url = "https://raw.githubusercontent.com/datasets/gold-prices/master/data/monthly.csv"
+            r = requests.get(url, timeout=8)
+            df = pd.read_csv(io.StringIO(r.text))
+            df.columns = ['Date', 'Price']
+            df['Date'] = pd.to_datetime(df['Date'])
+            df = df[df['Date'] >= '2000-01-01'].copy()
+            return df
+        except Exception as e:
+            return None
+
+    @st.cache_data(ttl=300)
+    def fetch_sp500_historical():
+        """Fetch S&P 500 monthly data from vega datasets"""
+        try:
+            url = "https://raw.githubusercontent.com/vega/vega-datasets/main/data/sp500.csv"
+            r = requests.get(url, timeout=8)
+            df = pd.read_csv(io.StringIO(r.text))
+            df.columns = ['Date', 'Price']
+            df['Date'] = pd.to_datetime(df['Date'], format='%b %d %Y', errors='coerce')
+            df = df.dropna().sort_values('Date')
+            return df
+        except Exception as e:
+            return None
+
+    @st.cache_data(ttl=300)
+    def fetch_crude_historical():
+        """Use OWID energy dataset for crude oil proxy"""
+        # We'll construct synthetic crude based on known data points
+        # Since direct crude API blocked, we use known historical anchor points
+        dates = pd.date_range('2000-01-01', '2026-06-01', freq='MS')
+        # Rough WTI oil price history (monthly approximation)
+        oil_anchors = {
+            '2000-01': 27, '2001-01': 28, '2002-01': 19, '2003-01': 33,
+            '2004-01': 34, '2005-01': 47, '2006-01': 65, '2007-01': 58,
+            '2008-01': 91, '2008-07': 133, '2009-01': 41, '2010-01': 79,
+            '2011-01': 91, '2012-01': 100, '2013-01': 94, '2014-01': 95,
+            '2015-01': 47, '2016-01': 32, '2017-01': 52, '2018-01': 62,
+            '2019-01': 53, '2020-03': 20, '2020-01': 61, '2021-01': 52,
+            '2022-01': 83, '2022-06': 114, '2023-01': 76, '2024-01': 73,
+            '2025-01': 75, '2025-06': 68, '2026-01': 82, '2026-06': 89
+        }
+        anchor_df = pd.DataFrame([
+            {'Date': pd.to_datetime(k), 'Price': v}
+            for k, v in oil_anchors.items()
+        ]).sort_values('Date')
+        interp = anchor_df.set_index('Date').reindex(
+            pd.date_range(anchor_df['Date'].min(), anchor_df['Date'].max(), freq='MS')
+        ).interpolate('linear').reset_index()
+        interp.columns = ['Date', 'Price']
+        return interp
+
+    @st.cache_data(ttl=300)
+    def fetch_inr_historical():
+        """Construct USD/INR history from known anchor points"""
+        inr_anchors = {
+            '2000-01': 44.9, '2002-01': 48.2, '2004-01': 45.3, '2006-01': 44.1,
+            '2008-01': 39.4, '2008-07': 42.8, '2009-01': 48.9, '2010-01': 45.7,
+            '2011-01': 44.7, '2012-01': 52.6, '2013-07': 59.8, '2014-01': 62.5,
+            '2015-01': 63.1, '2016-01': 67.8, '2017-01': 67.7, '2018-10': 74.2,
+            '2019-01': 71.3, '2020-01': 71.3, '2020-04': 76.4, '2021-01': 73.1,
+            '2022-01': 74.5, '2022-10': 83.1, '2023-01': 81.9, '2024-01': 83.2,
+            '2025-01': 86.5, '2025-06': 84.1, '2025-12': 87.3,
+            '2026-01': 88.9, '2026-03': 91.2, '2026-06': 95.25
+        }
+        anchor_df = pd.DataFrame([
+            {'Date': pd.to_datetime(k), 'Rate': v}
+            for k, v in inr_anchors.items()
+        ]).sort_values('Date')
+        interp = anchor_df.set_index('Date').reindex(
+            pd.date_range(anchor_df['Date'].min(), anchor_df['Date'].max(), freq='MS')
+        ).interpolate('linear').reset_index()
+        interp.columns = ['Date', 'Rate']
+        return interp
+
+    @st.cache_data(ttl=300)
+    def get_live_prices():
+        """
+        Attempt to get live prices. Falls back gracefully to last known values.
+        Returns dict with price data and source info.
+        """
+        prices = {
+            'gold_usd':   {'value': 4139.0,  'change': '+0.3%', 'source': 'Known (Jun 12 2026)', 'status': 'known'},
+            'usd_inr':    {'value': 95.25,   'change': '+0.2%', 'source': 'Known (Jun 12 2026)', 'status': 'known'},
+            'crude_wti':  {'value': 89.4,    'change': '+1.1%', 'source': 'Estimated',            'status': 'estimated'},
+            'crude_brent':{'value': 92.8,    'change': '+0.9%', 'source': 'Estimated',            'status': 'estimated'},
+            'sp500':      {'value': 5821.0,  'change': '-0.8%', 'source': 'Estimated',            'status': 'estimated'},
+            'nifty':      {'value': 24350.0, 'change': '+0.4%', 'source': 'Estimated',            'status': 'estimated'},
+            'btc_usd':    {'value': 104200.0,'change': '-1.2%', 'source': 'Estimated',            'status': 'estimated'},
+            'us10y':      {'value': 4.68,    'change': '+0.04', 'source': 'Estimated',            'status': 'estimated'},
+            'gold_inr':   {'value': None,    'change': None,    'source': 'Derived',               'status': 'derived'},
+        }
+        # Derive gold in INR
+        gold_inr_val = prices['gold_usd']['value'] * prices['usd_inr']['value'] / 31.1035  # per gram
+        prices['gold_inr'] = {
+            'value': round(gold_inr_val, 0),
+            'change': 'derived',
+            'source': 'Gold × INR / 31.1',
+            'status': 'derived'
+        }
+        return prices
+
+    @st.cache_data(ttl=600)
+    def build_scenario_projections():
+        """Build forward scenario projections for key assets"""
+        today = pd.to_datetime('2026-06-12')
+        end   = pd.to_datetime('2029-01-01')
+        months = pd.date_range(today, end, freq='MS')
+
+        def sigmoid_interp(x, x0, k=8):
+            return 1 / (1 + np.exp(-k * (x - x0)))
+
+        n = len(months)
+        t = np.linspace(0, 1, n)
+
+        # Phase markers (0-1 range)
+        ph1_end   = 0.14  # Sep 2026
+        ph2_end   = 0.35  # Mar 2027
+        ph3_peak  = 0.50  # Jul 2027
+        ph4_start = 0.60  # Sep 2027
+
+        # Gold USD scenario
+        base_gold = 4139
+        gold_base    = base_gold * (1 + 0.12 * t)  # slow grind
+        gold_rupture = base_gold * np.where(
+            t < ph1_end,  1 + 0.08*t/ph1_end,
+            np.where(t < ph2_end,
+                     (1 + 0.08) * (1 - 0.05*sigmoid_interp(t, ph1_end+0.05)),
+                     np.where(t < ph3_peak,
+                              (1 + 0.03) + 0.75 * sigmoid_interp(t, (ph2_end+ph3_peak)/2, k=12),
+                              1.78 - 0.15*(t - ph3_peak)/(1-ph3_peak)
+                              )
+                     )
+        )
+        gold_bull = base_gold * np.where(
+            t < ph3_peak,
+            1 + 0.90*sigmoid_interp(t, ph2_end+0.05, k=10),
+            1.90 - 0.05*(t - ph3_peak)
+        )
+
+        # USD/INR scenario
+        base_inr = 95.25
+        inr_rupture = base_inr * np.where(
+            t < ph1_end, 1 + 0.05*t/ph1_end,
+            np.where(t < ph2_end, 1.05 + 0.02*(t-ph1_end)/(ph2_end-ph1_end),
+                     np.where(t < ph3_peak, 1.07 - 0.10*sigmoid_interp(t, ph2_end+0.08, k=10),
+                              0.97 - 0.18*(t-ph3_peak)/(1-ph3_peak)
+                              ))
+        )
+        inr_rupture = np.clip(inr_rupture, 0.75, 1.12) * base_inr
+
+        # Crude oil scenario
+        base_crude = 89.4
+        crude_rupture = base_crude * np.where(
+            t < ph1_end,  1 + 0.08*t/ph1_end,
+            np.where(t < ph2_end, 1.08 + 0.12*(t-ph1_end)/(ph2_end-ph1_end),
+                     np.where(t < ph3_peak, 1.20 - 0.10*sigmoid_interp(t, ph3_peak-0.05),
+                              1.10 + 0.05*np.sin(20*(t-ph3_peak))  # volatile
+                              ))
+        )
+
+        # S&P 500 scenario
+        base_sp = 5821
+        sp_rupture = base_sp * np.where(
+            t < ph1_end,  1 + 0.06*t/ph1_end,
+            np.where(t < ph2_end, 1.06 - 0.02*(t-ph1_end)/(ph2_end-ph1_end),
+                     np.where(t < ph3_peak,
+                              1.04 - 0.40*sigmoid_interp(t, ph2_end+0.03, k=15),
+                              0.65 + 0.20*sigmoid_interp(t, ph4_start, k=10)
+                              ))
+        )
+
+        # Nifty scenario
+        base_nifty = 24350
+        nifty_rupture = base_nifty * np.where(
+            t < ph1_end,  1 + 0.04*t/ph1_end,
+            np.where(t < ph2_end, 1.04 - 0.01*(t-ph1_end)/(ph2_end-ph1_end),
+                     np.where(t < ph3_peak,
+                              1.03 - 0.32*sigmoid_interp(t, ph2_end+0.05, k=12),
+                              0.72 + 0.35*sigmoid_interp(t, ph4_start+0.05, k=8)
+                              ))
+        )
+
+        # Gold in INR
+        gold_inr_rupture = gold_rupture * inr_rupture / 31.1035  # per gram
+
+        return pd.DataFrame({
+            'Date': months,
+            't': t,
+            'gold_base': gold_base,
+            'gold_rupture': gold_rupture,
+            'gold_bull': gold_bull,
+            'inr_rupture': inr_rupture,
+            'crude_rupture': crude_rupture,
+            'sp_rupture': sp_rupture,
+            'nifty_rupture': nifty_rupture,
+            'gold_inr_rupture': gold_inr_rupture,
+        })
+
+
+    # ── Phase event markers ──────────────────────────────────────────────────────
+    PHASE_EVENTS = [
+        {'date': '2026-06-12', 'label': 'SpaceX IPO\n$1.75T',      'color': '#818cf8', 'symbol': 'star'},
+        {'date': '2026-10-23', 'label': 'Anthropic IPO\n~$1T',     'color': '#c084fc', 'symbol': 'star'},
+        {'date': '2026-11-03', 'label': 'US Midterms',              'color': '#60a5fa', 'symbol': 'triangle-up'},
+        {'date': '2026-12-15', 'label': 'SpaceX lockup\nexpiry',   'color': '#f87171', 'symbol': 'x'},
+        {'date': '2027-04-23', 'label': 'Anthropic\nlockup expiry','color': '#f87171', 'symbol': 'x'},
+        {'date': '2027-06-15', 'label': 'Fed decision\npoint',     'color': '#fbbf24', 'symbol': 'diamond'},
+        {'date': '2027-09-01', 'label': 'Fed prints\n(projected)', 'color': '#4ade80', 'symbol': 'circle'},
+        {'date': '2028-03-01', 'label': 'USD rebase\n-30% INR',    'color': '#34d399', 'symbol': 'triangle-down'},
+    ]
+
+    IPO_DATA = [
+        {
+            'name': 'SpaceX / xAI', 'badge': 'LIVE TODAY', 'badge_class': 'badge-live',
+            'rows': [
+                ('Ticker', 'SPCX · Nasdaq'),
+                ('IPO price', '$135 / share'),
+                ('Valuation', '$1.75 trillion'),
+                ('2025 Revenue', '$18.67B'),
+                ('Profitability', 'Unproven at scale'),
+                ('Lockup expiry', '~Dec 2026 (~180d)'),
+                ('Key risk', 'Dual-class · Musk control'),
+                ('xAI merged', 'Feb 2026 all-stock deal'),
+            ]
+        },
+        {
+            'name': 'Anthropic', 'badge': 'OCT 2026', 'badge_class': 'badge-oct',
+            'rows': [
+                ('S-1 filed', 'Jun 1, 2026 (confidential)'),
+                ('Target listing', 'Oct 23, 2026'),
+                ('Series H valuation', '$965B → ~$1T+ IPO'),
+                ('ARR (May 2026)', '$47B run-rate (5× in 5mo)'),
+                ('First op. profit', 'Q2 2026 projected'),
+                ('Lockup expiry', '~Apr 2027 (THE SIGNAL)'),
+                ('Lead banks', 'Goldman · JPMorgan · MS'),
+                ('Key risk', 'Compute cost / SEC review'),
+            ]
+        },
+        {
+            'name': 'OpenAI', 'badge': '2027', 'badge_class': 'badge-2027',
+            'rows': [
+                ('S-1 filed', 'Jun 8, 2026 (confidential)'),
+                ('Target listing', 'Sep–Dec 2026 or 2027'),
+                ('Valuation', '$730B–$1T+'),
+                ('2025 ARR', '$20B+'),
+                ('2026 loss (proj.)', '$14B GAAP ($25B full)'),
+                ('Profitable by', '~2030 (CFO guidance)'),
+                ('Add. funding needed', '$207B by 2030 (HSBC)'),
+                ('Key risk', 'Losses, restructuring'),
+            ]
+        },
+    ]
+
+    TIMELINE_ROWS = [
+        {
+            'period': 'Jun 2026\nTODAY',
+            'alert': True,
+            'cells': [
+                ('cell-ipo',    'SpaceX IPO live',     'SPCX lists $1.75T. Largest IPO in history. xAI merged in.'),
+                ('cell-macro',  'Iran war inflation',  'CPI 4%+, front-end rates under pressure. Warsh paralysed.'),
+                ('cell-401k',   '$141K avg, ↓4%',      'Q1 2026 Fidelity data. First cracks. Loan withdrawals rising.'),
+                ('cell-gold',   'Gold $4,139 / INR 95.25', 'Stress already here. Accumulate SGBs now. Reduce US exposure.'),
+                ('cell-india',  'Accumulate phase',    'SGBs aggressively. Exit IT stocks. Build cash dry powder.'),
+            ]
+        },
+        {
+            'period': 'Jul–Sep 2026',
+            'alert': False,
+            'cells': [
+                ('cell-ipo',    'AI melt-up',          'Anthropic IPO hype lifts Nvidia, MSFT, GOOGL. FOMO max.'),
+                ('cell-macro',  'Fed paralysed',       'Won\'t hike into midterms. Warsh "disinflationary" narrative.'),
+                ('cell-401k',   'Brief recovery',      'AI rally lifts 401(k) briefly. False sense of safety.'),
+                ('cell-gold',   'Gold grinds up',      'INR ~92–97. Use the rally to EXIT Indian IT stocks.'),
+                ('cell-india',  'EXIT equities',       'Sell US-facing exposure into AI rally. These are gift prices.'),
+            ]
+        },
+        {
+            'period': 'Oct 2026\n🚨 RED ALERT',
+            'alert': True,
+            'cells': [
+                ('cell-ipo',    'Anthropic IPO',       '~$1T+ valuation. Peak AI narrative. Maximum global FOMO.'),
+                ('cell-macro',  'Midterms Nov 2026',   'Every policy lever pulled. Political liquidity injections.'),
+                ('cell-401k',   'Peak balances',       '40% S&P = 10 AI stocks. Concentration at extremes.'),
+                ('cell-gold',   'Gold $4,500+?',       'Max defense. SGBs + physical. IPO = top signal, not opportunity.'),
+                ('cell-india',  'MAX DEFENSE',         'Oct 1 = full defensive. Gold 45%, Cash 30%, Equity 20%.'),
+            ]
+        },
+        {
+            'period': 'Nov–Dec 2026',
+            'alert': False,
+            'cells': [
+                ('cell-ipo',    'OpenAI S-1 public',   'Files ~Aug, lists Sep–Dec. $14–25B loss disclosed. Market shock.'),
+                ('cell-macro',  'Midterm results',     'Political cover fades post-election. Bond stress resumes.'),
+                ('cell-401k',   'Deceptive calm',      'Lockups not expired. People complacent. False floor.'),
+                ('cell-gold',   'Hold gold firm',      'This period will feel like you\'re wrong. You are NOT.'),
+                ('cell-india',  'Do nothing',          'Hold position. Add gold on any weakness. Watch SPCX closely.'),
+            ]
+        },
+        {
+            'period': 'Jan–Mar 2027',
+            'alert': False,
+            'cells': [
+                ('cell-ipo',    'Earnings reality',    'SpaceX Q3/Q4 + Anthropic first 2 public quarters. Gap visible.'),
+                ('cell-macro',  'Bond stress builds',  'Debt maturity wall. Japan/Korea EM pricing worsens.'),
+                ('cell-401k',   'Volatility rising',   '$10–50K swings per week. Anxiety builds among retirees.'),
+                ('cell-gold',   'Gold $4,800+?',       'INR ~97–101. Gold INR flat to up. Keep all gold.'),
+                ('cell-india',  'Watchlist ready',     'Finalise quality India names. Cash dry powder at maximum.'),
+            ]
+        },
+        {
+            'period': 'Apr 2027\n⚠ THE SIGNAL',
+            'alert': True,
+            'cells': [
+                ('cell-danger', 'Lockup expiry',       'Anthropic: Google, Amazon, employees ALL can sell. Structural.'),
+                ('cell-danger', 'Cascade begins',      '"If Anthropic can\'t monetise, who can?" Nvidia guidance cut.'),
+                ('cell-401k',   'Balances crater',     '40% S&P concentration = brutal 401(k) loss. Forced withdrawals.'),
+                ('cell-gold',   'Gold dips briefly',   'Margin call selling. INR 99–103. Gold INR flat. HOLD. DON\'T SELL.'),
+                ('cell-india',  'Nifty -20%+',         'FII outflows. INR 99–103. Deploy 1st tranche of equity (10–15%).'),
+            ]
+        },
+        {
+            'period': 'May–Jun 2027',
+            'alert': False,
+            'cells': [
+                ('cell-danger', 'Bond contagion',      'Treasuries sold not bought. 10Y spikes. Everything liquidated.'),
+                ('cell-danger', 'Fed choice point',    'Dollar or bonds? Warsh must decide. Extreme volatility.'),
+                ('cell-401k',   'Retirement crisis',   'Boomers near retirement forced to sell at lows. Amplifies crash.'),
+                ('cell-gold',   'Gold recovers',       'Fed signals printing. Gold starts explosive move. INR 101–106.'),
+                ('cell-india',  '2nd tranche',         'Nifty -30–35%. Add domestic: FMCG, pharma, utilities, PSU banks.'),
+            ]
+        },
+        {
+            'period': 'Jul–Sep 2027\n🖨 FED PRINTS',
+            'alert': True,
+            'cells': [
+                ('cell-ipo',    'AI reset',            'SpaceX may survive (rockets real). Anthropic/OpenAI 25x→8x rev.'),
+                ('cell-macro',  'QE / YCC announced',  'Fed buys bonds. Dollar collapses. New monetary framework talk.'),
+                ('cell-401k',   'Permanent damage',    'Early retirees locked in losses. Social Security stress narrative.'),
+                ('cell-gold',   'Gold EXPLODES',       '$5,500–$7,000? INR recovering 95→88. Gold INR ₹480K–₹600K. HOLD.'),
+                ('cell-india',  '3rd tranche',         'Nifty bottoming. Quality mid-cap India. Build silver aggressively.'),
+            ]
+        },
+        {
+            'period': 'H2 2027–2028',
+            'alert': False,
+            'cells': [
+                ('cell-phase',  'Stabilisation',       'Surviving AI cos trade on actual earnings. Dot-com survivors.'),
+                ('cell-macro',  'Dollar rebases 30%',  'INR strengthens 100→70–75. De-dollarisation accelerates.'),
+                ('cell-401k',   'Policy response',     '401(k) bailout political pressure. Inflationary. Validates thesis.'),
+                ('cell-gold',   'EXIT GOLD NOW',       'INR strong = gold INR falls. Sell before INR hits 75. Rotate.'),
+                ('cell-india',  'Full India equity',   'FII money floods back. INR+Nifty double tailwind. Generational.'),
+            ]
+        },
+        {
+            'period': '2028+',
+            'alert': False,
+            'cells': [
+                ('cell-silver', 'Silver peaks late',   'Gold/silver ratio 88→45. Silver $130–150. Exits AFTER gold.'),
+                ('cell-macro',  'New cycle',           'India structural winner. RBI gold reserves = strong INR backing.'),
+                ('cell-401k',   'US consumption shock','Boomers poorer. US recession deepens. India domestic shines.'),
+                ('cell-gold',   '5–10% permanent',     'Keep small gold forever (SGBs for 2.5% yield). Rest → India equity.'),
+                ('cell-india',  'Compound India',      'Domestic consumption. Pharma. Power infra. 5–10yr holding.'),
+            ]
+        },
+    ]
+
+    PORTFOLIO_PHASES = {
+        'Now – Sep 2026': {'Gold/SGBs': 35, 'INR Cash': 25, 'India Equity': 30, 'Silver': 10},
+        'Oct 2026 – Mar 2027': {'Gold/SGBs': 45, 'INR Cash': 30, 'India Equity': 20, 'Silver': 5},
+        'Apr – Jun 2027': {'Gold/SGBs': 50, 'INR Cash': 35, 'India Equity': 10, 'Silver': 5},
+        'H2 2027': {'Gold/SGBs': 35, 'INR Cash': 15, 'India Equity': 35, 'Silver': 15},
+        '2028+': {'Gold/SGBs': 25, 'INR Cash': 15, 'India Equity': 45, 'Silver': 15},
+    }
+
+
+    # ── App layout ───────────────────────────────────────────────────────────────
+
+    st.markdown("<h1 style='font-size:22px;font-weight:500;color:#1A1A18;margin-bottom:4px;letter-spacing:-0.2px;'>AI IPO Macro Dashboard</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='font-size:12px;color:#888480;margin-bottom:16px;letter-spacing:0.02em;'>AI bubble · sovereign debt · India positioning &nbsp;·&nbsp; Updated Jun 12, 2026</p>", unsafe_allow_html=True)
+
+    # Warn box
     st.markdown("""
-    <div class='section-header'>Gold INR phase math</div>
-    <div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;'>
-      <div class='tl-cell cell-gold'><b>Phase 1 (Apr–Jun 27)</b><span>Gold USD ↓13% + INR ↓16% = Gold INR flat. Natural hedge. HOLD.</span></div>
-      <div class='tl-cell cell-gold'><b>Phase 2 (Jul–Sep 27)</b><span>Gold USD ↑92% + INR recovers to 88 = Gold INR ↑73%. HOLD ALL.</span></div>
-      <div class='tl-cell cell-danger'><b>EXIT window (H2 27)</b><span>Gold USD plateaus + INR appreciating = gold INR FALLS. Exit in layers before INR hits 78.</span></div>
-      <div class='tl-cell cell-silver'><b>Silver after gold</b><span>Ratio 88→45. Silver peaks AFTER gold. Better vs INR rebase. Solar India demand adds fuel.</span></div>
+    <div class='warn-box'>
+    ⚠ SpaceX (SPCX) began trading today — June 12, 2026 — at $135/share · $1.75T valuation. The AI vacuum phase is no longer theoretical. USD/INR is already at 95.25 — stress rupture scenario is weeks away, not months.
     </div>
     """, unsafe_allow_html=True)
 
-with tab5:
-    phases = list(PORTFOLIO_PHASES.keys())
-    assets = ['Gold/SGBs', 'INR Cash', 'India Equity', 'Silver']
-    colors = ['#fbbf24', '#60a5fa', '#4ade80', '#5eead4']
+    # Fetch data
+    with st.spinner("Loading market data..."):
+        prices     = get_live_prices()
+        gold_hist  = fetch_gold_historical()
+        sp500_hist = fetch_sp500_historical()
+        inr_hist   = fetch_inr_historical()
+        crude_hist = fetch_crude_historical()
+        scenarios  = build_scenario_projections()
 
-    fig5 = go.Figure()
-    for asset, color in zip(assets, colors):
-        vals = [PORTFOLIO_PHASES[p][asset] for p in phases]
-        fig5.add_trace(go.Bar(
-            name=asset, x=phases, y=vals,
-            marker_color=color, marker_opacity=0.85,
-            text=[f'{v}%' for v in vals],
-            textposition='inside',
-            textfont=dict(color='#0e1117', size=11, family='Inter'),
+
+    # ── Live price metrics ───────────────────────────────────────────────────────
+    st.markdown("<div class='section-header'>Live market snapshot</div>", unsafe_allow_html=True)
+
+    cols = st.columns(8)
+    metric_defs = [
+        ('Gold USD',     'gold_usd',    '$',    '',    'metric-warn'),
+        ('USD / INR',    'usd_inr',     '₹',    '',    'metric-down'),
+        ('Gold / INR*',  'gold_inr',    '₹',    '/g',  'metric-warn'),
+        ('Crude WTI',    'crude_wti',   '$',    '/bbl','metric-warn'),
+        ('Crude Brent',  'crude_brent', '$',    '/bbl','metric-warn'),
+        ('S&P 500',      'sp500',       '',     '',    'metric-neutral'),
+        ('Nifty 50',     'nifty',       '',     '',    'metric-neutral'),
+        ('US 10Y Yield', 'us10y',       '',     '%',   'metric-down'),
+    ]
+    for col, (label, key, prefix, suffix, cls) in zip(cols, metric_defs):
+        with col:
+            p = prices[key]
+            v = p['value']
+            fmt = f"{prefix}{v:,.2f}{suffix}" if isinstance(v, float) else str(v)
+            if key == 'gold_inr':
+                fmt = f"₹{v:,.0f}/g"
+            st.markdown(f"""
+            <div class='metric-card'>
+              <div class='metric-label'>{label}</div>
+              <div class='metric-value {cls}'>{fmt}</div>
+              <div class='metric-sub'>{p['change']} · {p['source']}</div>
+            </div>""", unsafe_allow_html=True)
+
+
+    # ── IPO pipeline cards ───────────────────────────────────────────────────────
+    st.markdown("<div class='section-header'>IPO pipeline — confirmed & expected</div>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    for col, ipo in zip([c1, c2, c3], IPO_DATA):
+        with col:
+            rows_html = ''.join(
+                f"<div class='ipo-row'><span>{r[0]}</span><span>{r[1]}</span></div>"
+                for r in ipo['rows']
+            )
+            st.markdown(f"""
+            <div class='ipo-card'>
+              <div class='ipo-title'><span class='badge {ipo['badge_class']}'>{ipo['badge']}</span>{ipo['name']}</div>
+              {rows_html}
+            </div>""", unsafe_allow_html=True)
+
+
+    # ── Charts ───────────────────────────────────────────────────────────────────
+    st.markdown("<div class='section-header'>Charts — historical + scenario projections</div>", unsafe_allow_html=True)
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📈 Gold & Crude", "💱 USD/INR", "📊 Equities", "🇮🇳 Gold in INR", "📋 Portfolio allocation"
+    ])
+
+    CHART_THEME = dict(
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='#FFFFFF',
+        font=dict(family='Inter', color='#666560', size=11),
+        xaxis=dict(gridcolor='#ECEAE4', linecolor='#D6D3CA', showgrid=True),
+        yaxis=dict(gridcolor='#ECEAE4', linecolor='#D6D3CA', showgrid=True),
+        legend=dict(bgcolor='rgba(255,255,255,0.9)', bordercolor='#D6D3CA'),
+        margin=dict(l=50, r=20, t=30, b=40),
+        hovermode='x unified',
+    )
+
+    def add_event_markers(fig, y_frac=0.92, row=None, col=None):
+        kwargs = {}
+        if row is not None:
+            kwargs = dict(row=row, col=col)
+        for ev in PHASE_EVENTS:
+            fig.add_vline(
+                x=pd.to_datetime(ev['date']),
+                line_width=1, line_dash='dot', line_color=ev['color'],
+                opacity=0.5, **kwargs
+            )
+        return fig
+
+    with tab1:
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            row_heights=[0.6, 0.4],
+                            subplot_titles=('Gold price (USD/oz)', 'Crude oil WTI (USD/bbl)'),
+                            vertical_spacing=0.08)
+
+        # Historical gold
+        if gold_hist is not None:
+            fig.add_trace(go.Scatter(
+                x=gold_hist['Date'], y=gold_hist['Price'],
+                name='Gold historical', line=dict(color='#fbbf24', width=1.5),
+                fill='tozeroy', fillcolor='rgba(251,191,36,0.06)'
+            ), row=1, col=1)
+
+        # Scenario projections — gold
+        fig.add_trace(go.Scatter(
+            x=scenarios['Date'], y=scenarios['gold_base'],
+            name='Base (slow grind)', line=dict(color='#6366f1', width=1.5, dash='dot')
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=scenarios['Date'], y=scenarios['gold_rupture'],
+            name='Rupture scenario', line=dict(color='#f87171', width=2.5)
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=scenarios['Date'], y=scenarios['gold_bull'],
+            name='Bull scenario', line=dict(color='#4ade80', width=1.5, dash='dash')
+        ), row=1, col=1)
+
+        # Current price marker
+        fig.add_hline(y=4139, line_width=1, line_color='#fbbf24',
+                      line_dash='dash', row=1, col=1,
+                      annotation_text=' Current: $4,139', annotation_font_color='#fbbf24')
+
+        # Crude historical
+        fig.add_trace(go.Scatter(
+            x=crude_hist['Date'], y=crude_hist['Price'],
+            name='Crude WTI historical', line=dict(color='#fb923c', width=1.5),
+            fill='tozeroy', fillcolor='rgba(251,146,60,0.06)'
+        ), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=scenarios['Date'], y=scenarios['crude_rupture'],
+            name='Crude rupture scenario', line=dict(color='#f87171', width=2, dash='dash')
+        ), row=2, col=1)
+
+        fig.add_hline(y=89.4, line_width=1, line_color='#fb923c',
+                      line_dash='dash', row=2, col=1,
+                      annotation_text=' Current: ~$89', annotation_font_color='#fb923c')
+
+        add_event_markers(fig, row=1, col=1)
+        add_event_markers(fig, row=2, col=1)
+
+        fig.update_layout(**CHART_THEME, height=550)
+        fig.update_annotations(font_color='#666560', font_size=11)
+        fig.add_vrect(x0='2027-04-01', x1='2027-09-30',
+                      fillcolor='rgba(248,113,113,0.07)',
+                      annotation_text='Rupture window', annotation_position='top left',
+                      annotation_font_color='#f87171', annotation_font_size=10,
+                      line_width=0)
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("<div class='note-box'>Gold historical data: datasets/gold-prices (GitHub). Crude oil: estimated from known anchor points (WTI monthly). Scenario projections are analytical estimates, not forecasts.</div>", unsafe_allow_html=True)
+
+    with tab2:
+        fig2 = go.Figure()
+
+        fig2.add_trace(go.Scatter(
+            x=inr_hist['Date'], y=inr_hist['Rate'],
+            name='USD/INR historical', line=dict(color='#60a5fa', width=1.5),
+            fill='tozeroy', fillcolor='rgba(96,165,250,0.06)'
+        ))
+        fig2.add_trace(go.Scatter(
+            x=scenarios['Date'], y=scenarios['inr_rupture'],
+            name='Rupture scenario', line=dict(color='#f87171', width=2.5)
         ))
 
-    fig5.update_layout(
-        **CHART_THEME, height=380, barmode='stack',
-        title=dict(text='Recommended portfolio allocation by phase (India investor)',
-                   font=dict(color='#1A1A18', size=13)),
-        yaxis_title='%',
-        yaxis_range=[0, 105],
-        legend_orientation='h', legend_y=1.12, legend_x=0,
-    )
-    st.plotly_chart(fig5, use_container_width=True)
+        # Zones
+        fig2.add_hline(y=95.25, line_color='#fbbf24', line_dash='dash', line_width=1,
+                       annotation_text=' Today: 95.25', annotation_font_color='#fbbf24')
+        fig2.add_hrect(y0=95, y1=105, fillcolor='rgba(248,113,113,0.08)',
+                       line_width=0,
+                       annotation_text='Phase 1 rupture zone (95–105)',
+                       annotation_font_color='#f87171', annotation_font_size=10,
+                       annotation_position='top right')
+        fig2.add_hrect(y0=70, y1=80, fillcolor='rgba(74,222,128,0.06)',
+                       line_width=0,
+                       annotation_text='USD rebase zone (70–80)',
+                       annotation_font_color='#27500A', annotation_font_size=10,
+                       annotation_position='bottom right')
 
-    # SGB note
+        add_event_markers(fig2)
+        fig2.update_layout(**CHART_THEME, height=420,
+                           title=dict(text='USD/INR — historical + rupture scenario',
+                                      font=dict(color='#1A1A18', size=13)))
+        fig2.add_vrect(x0='2027-04-01', x1='2027-09-30',
+                       fillcolor='rgba(248,113,113,0.07)',
+                       annotation_text='Rupture window',
+                       annotation_font_color='#f87171', annotation_font_size=10,
+                       line_width=0)
+        st.plotly_chart(fig2, use_container_width=True)
+
+        # INR decision table
+        st.markdown("""
+        <div class='section-header' style='margin-top:8px;'>INR action guide</div>
+        <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px;'>
+          <div class='tl-cell cell-gold' style='min-height:60px;'><b>Hold INR when</b><span>System functioning · RBI defending · Current a/c near balance · Post Fed print stabilisation</span></div>
+          <div class='tl-cell cell-danger' style='min-height:60px;'><b>Hold Gold when</b><span>System under stress · FII outflows · Yields breaking out · Uncertain phase · Basically 2026–2027</span></div>
+          <div class='tl-cell cell-silver' style='min-height:60px;'><b>The key rule</b><span>USD weak + INR strong = gold DOWN in INR. Exit gold BEFORE full INR rebase. Window is weeks not years.</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with tab3:
+        fig3 = make_subplots(rows=1, cols=2,
+                             subplot_titles=('S&P 500 scenario', 'Nifty 50 scenario'))
+
+        if sp500_hist is not None:
+            fig3.add_trace(go.Scatter(
+                x=sp500_hist['Date'], y=sp500_hist['Price'],
+                name='S&P historical', line=dict(color='#60a5fa', width=1.5)
+            ), row=1, col=1)
+
+        fig3.add_trace(go.Scatter(
+            x=scenarios['Date'], y=scenarios['sp_rupture'],
+            name='S&P rupture', line=dict(color='#f87171', width=2.5)
+        ), row=1, col=1)
+
+        # Nifty
+        nifty_anchors = {
+            '2015-01': 8808, '2016-01': 7600, '2017-01': 8186, '2018-01': 10906,
+            '2019-01': 10831,'2020-03': 7511, '2021-01': 14018,'2022-01': 17354,
+            '2023-01': 18105,'2024-01': 21731,'2025-01': 23169,'2026-01': 24800,
+            '2026-06': 24350
+        }
+        nifty_df = pd.DataFrame([
+            {'Date': pd.to_datetime(k), 'Price': v}
+            for k, v in nifty_anchors.items()
+        ]).sort_values('Date')
+        nifty_interp = nifty_df.set_index('Date').reindex(
+            pd.date_range(nifty_df['Date'].min(), nifty_df['Date'].max(), freq='MS')
+        ).interpolate('linear').reset_index()
+        nifty_interp.columns = ['Date', 'Price']
+
+        fig3.add_trace(go.Scatter(
+            x=nifty_interp['Date'], y=nifty_interp['Price'],
+            name='Nifty historical', line=dict(color='#4ade80', width=1.5)
+        ), row=1, col=2)
+        fig3.add_trace(go.Scatter(
+            x=scenarios['Date'], y=scenarios['nifty_rupture'],
+            name='Nifty rupture', line=dict(color='#fb923c', width=2.5)
+        ), row=1, col=2)
+
+        add_event_markers(fig3, row=1, col=1)
+        add_event_markers(fig3, row=1, col=2)
+
+        fig3.add_vrect(x0='2027-04-01', x1='2027-09-30',
+                       fillcolor='rgba(248,113,113,0.07)', line_width=0, row=1, col=1)
+        fig3.add_vrect(x0='2027-04-01', x1='2027-09-30',
+                       fillcolor='rgba(248,113,113,0.07)', line_width=0, row=1, col=2)
+
+        fig3.update_layout(**CHART_THEME, height=420)
+        st.plotly_chart(fig3, use_container_width=True)
+
+        st.markdown("""
+        <div class='note-box'>
+        401(k) destruction mechanism: Top 10 S&P stocks = ~40% of index weight. All AI bets. A 50% AI complex drawdown = ~20–25% 401(k) loss mechanically, before panic selling amplifies it. Fidelity Q1 2026: avg $141K already down 4%. Political pressure to bail out will be the inflationary policy response that validates the gold thesis.
+        </div>""", unsafe_allow_html=True)
+
+    with tab4:
+        fig4 = go.Figure()
+
+        # Gold in INR — historical (gold_usd × inr)
+        if gold_hist is not None and inr_hist is not None:
+            gold_m = gold_hist.set_index('Date').resample('MS').last()
+            inr_m  = inr_hist.set_index('Date').resample('MS').last()
+            combined = gold_m.join(inr_m, how='inner', lsuffix='_gold', rsuffix='_inr')
+            combined.columns = ['gold_usd', 'usd_inr']
+            combined['gold_inr_gram'] = combined['gold_usd'] * combined['usd_inr'] / 31.1035
+            combined = combined.reset_index()
+            fig4.add_trace(go.Scatter(
+                x=combined['Date'], y=combined['gold_inr_gram'],
+                name='Gold in INR (historical, ₹/gram)',
+                line=dict(color='#fbbf24', width=2),
+                fill='tozeroy', fillcolor='rgba(251,191,36,0.06)'
+            ))
+
+        fig4.add_trace(go.Scatter(
+            x=scenarios['Date'], y=scenarios['gold_inr_rupture'],
+            name='Gold INR rupture scenario (₹/gram)',
+            line=dict(color='#f87171', width=2.5)
+        ))
+
+        current_gold_inr = 4139 * 95.25 / 31.1035
+        fig4.add_hline(y=current_gold_inr, line_color='#fbbf24', line_dash='dash',
+                       annotation_text=f' Today: ₹{current_gold_inr:,.0f}/g',
+                       annotation_font_color='#fbbf24')
+
+        # Exit zones
+        fig4.add_vrect(x0='2027-07-01', x1='2027-12-31',
+                       fillcolor='rgba(74,222,128,0.07)',
+                       annotation_text='Gold INR EXIT WINDOW',
+                       annotation_font_color='#27500A', annotation_font_size=11,
+                       line_width=0)
+        fig4.add_vrect(x0='2027-04-01', x1='2027-07-01',
+                       fillcolor='rgba(248,113,113,0.07)',
+                       annotation_text='Hold — don\'t panic',
+                       annotation_font_color='#f87171', annotation_font_size=10,
+                       line_width=0)
+
+        add_event_markers(fig4)
+        fig4.update_layout(**CHART_THEME, height=420,
+                           title=dict(text='Gold price in INR (₹/gram) — the Indian investor view',
+                                      font=dict(color='#1A1A18', size=13)),
+                           yaxis_title='₹ per gram')
+        st.plotly_chart(fig4, use_container_width=True)
+
+        # Phase math
+        st.markdown("""
+        <div class='section-header'>Gold INR phase math</div>
+        <div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;'>
+          <div class='tl-cell cell-gold'><b>Phase 1 (Apr–Jun 27)</b><span>Gold USD ↓13% + INR ↓16% = Gold INR flat. Natural hedge. HOLD.</span></div>
+          <div class='tl-cell cell-gold'><b>Phase 2 (Jul–Sep 27)</b><span>Gold USD ↑92% + INR recovers to 88 = Gold INR ↑73%. HOLD ALL.</span></div>
+          <div class='tl-cell cell-danger'><b>EXIT window (H2 27)</b><span>Gold USD plateaus + INR appreciating = gold INR FALLS. Exit in layers before INR hits 78.</span></div>
+          <div class='tl-cell cell-silver'><b>Silver after gold</b><span>Ratio 88→45. Silver peaks AFTER gold. Better vs INR rebase. Solar India demand adds fuel.</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with tab5:
+        phases = list(PORTFOLIO_PHASES.keys())
+        assets = ['Gold/SGBs', 'INR Cash', 'India Equity', 'Silver']
+        colors = ['#fbbf24', '#60a5fa', '#4ade80', '#5eead4']
+
+        fig5 = go.Figure()
+        for asset, color in zip(assets, colors):
+            vals = [PORTFOLIO_PHASES[p][asset] for p in phases]
+            fig5.add_trace(go.Bar(
+                name=asset, x=phases, y=vals,
+                marker_color=color, marker_opacity=0.85,
+                text=[f'{v}%' for v in vals],
+                textposition='inside',
+                textfont=dict(color='#0e1117', size=11, family='Inter'),
+            ))
+
+        fig5.update_layout(
+            **CHART_THEME, height=380, barmode='stack',
+            title=dict(text='Recommended portfolio allocation by phase (India investor)',
+                       font=dict(color='#1A1A18', size=13)),
+            yaxis_title='%',
+            yaxis_range=[0, 105],
+            legend_orientation='h', legend_y=1.12, legend_x=0,
+        )
+        st.plotly_chart(fig5, use_container_width=True)
+
+        # SGB note
+        st.markdown("""
+        <div class='note-box'>
+        <b style='color:#854F0B;'>SGB advantage:</b> Sovereign Gold Bonds offer 2.5% annual interest + gold price appreciation + tax-free maturity at 8 years. 
+        Best vehicle for the gold leg of this thesis. Physical gold for insurance (5–10% of gold allocation). 
+        Avoid gold ETFs as primary vehicle — counterparty risk defeats the purpose in a rupture scenario.
+        </div>""", unsafe_allow_html=True)
+
+
+    # ── Month-by-month timeline ───────────────────────────────────────────────────
+    # ── Cascade health banner (from news.json) ──────────────────────────────────
+    if NEWS_OVERLAY:
+        _summary = _raw_news.get('overall_summary', {})
+        _score = _summary.get('cascade_health_index', None)
+        _flags = _summary.get('immediate_red_flags', '')
+        _validated = sum(1 for v in NEWS_OVERLAY.values() if 'Validated' in v.get('status',''))
+        _partial   = sum(1 for v in NEWS_OVERLAY.values() if 'Partial'   in v.get('status',''))
+        _total     = len(NEWS_OVERLAY)
+        _bar_w     = f"{_score}%" if _score else "0%"
+        _bar_color = "#27500A" if _score and _score >= 75 else "#854F0B" if _score and _score >= 50 else "#791F1F"
+        st.markdown(f"""
+    <div style='background:#FFFFFF;border:0.5px solid #D6D3CA;border-left:3px solid {_bar_color};
+         border-radius:8px;padding:10px 14px;margin-bottom:10px;'>
+      <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;'>
+        <span style='font-size:11px;font-weight:600;color:#1A1A18;'>📰 Live news overlay active — {_total} cells annotated</span>
+        <span style='font-size:11px;font-weight:600;color:{_bar_color};'>Cascade health: {_score}/100</span>
+      </div>
+      <div style='background:#F1EFE8;border-radius:4px;height:6px;margin-bottom:8px;'>
+        <div style='background:{_bar_color};width:{_bar_w};height:6px;border-radius:4px;'></div>
+      </div>
+      <div style='display:flex;gap:12px;margin-bottom:6px;'>
+        <span style='font-size:10px;background:#EAF3DE;color:#27500A;padding:2px 7px;border-radius:4px;'>✅ Validated: {_validated}</span>
+        <span style='font-size:10px;background:#FFF8E8;color:#854F0B;padding:2px 7px;border-radius:4px;'>⚠️ Partial: {_partial}</span>
+        <span style='font-size:10px;background:#F1EFE8;color:#666560;padding:2px 7px;border-radius:4px;'>⏳ Too early: {_total - _validated - _partial}</span>
+      </div>
+      <div style='font-size:10px;color:#666560;line-height:1.5;'><b style='color:#791F1F;'>Red flags:</b> {_flags}</div>
+    </div>""", unsafe_allow_html=True)
+    elif not NEWS_OVERLAY:
+        st.info("📂 Place **news.json** in the same folder as m.py to activate live news overlays on each cell.")
+
+    st.markdown("<div class='section-header'>Month-by-month timeline</div>", unsafe_allow_html=True)
+
+    # Phase pills
     st.markdown("""
-    <div class='note-box'>
-    <b style='color:#854F0B;'>SGB advantage:</b> Sovereign Gold Bonds offer 2.5% annual interest + gold price appreciation + tax-free maturity at 8 years. 
-    Best vehicle for the gold leg of this thesis. Physical gold for insurance (5–10% of gold allocation). 
-    Avoid gold ETFs as primary vehicle — counterparty risk defeats the purpose in a rupture scenario.
-    </div>""", unsafe_allow_html=True)
+    <div style='margin-bottom:12px;'>
+      <span class='phase-pill ph-vacuum'><span class='phase-dot' style='background:#6366f1'></span>Phase 1: AI vacuum (now → Sep 2026)</span>
+      <span class='phase-pill ph-stress'><span class='phase-dot' style='background:#f59e0b'></span>Phase 2: Stress fractures (Oct 2026 → Mar 2027)</span>
+      <span class='phase-pill ph-rupture'><span class='phase-dot' style='background:#ef4444'></span>Phase 3: Rupture (Apr → Sep 2027)</span>
+      <span class='phase-pill ph-reset'><span class='phase-dot' style='background:#22c55e'></span>Phase 4: Reset / deploy (H2 2027 → 2028)</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Column headers
+    st.markdown("""
+    <div style='display:grid;grid-template-columns:95px 1fr 1fr 1fr 1fr 1fr;gap:5px;margin-bottom:4px;'>
+      <span style='font-size:10px;color:#4b5563;'></span>
+      <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>IPO events</span>
+      <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>Macro / bonds</span>
+      <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>401(k) impact</span>
+      <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>Gold / INR</span>
+      <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>India action</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    for row_idx, row in enumerate(TIMELINE_ROWS):
+        cells_html = ''
+        for col_idx, (cls, title, desc) in enumerate(row['cells']):
+            overlay = news_overlay_html(row_idx, col_idx)
+            cells_html += f"<div class='tl-cell {cls}'><b>{title}</b><span>{desc}</span>{overlay}</div>"
+
+        period_display = row['period'].replace('\n', '<br>')
+        st.markdown(f"""
+        <div class='timeline-row'>
+          <div class='tl-date'>{period_display}</div>
+          {cells_html}
+        </div>""", unsafe_allow_html=True)
 
 
-# ── Month-by-month timeline ───────────────────────────────────────────────────
-# ── Cascade health banner (from news.json) ──────────────────────────────────
-if NEWS_OVERLAY:
-    _summary = _raw_news.get('overall_summary', {})
-    _score = _summary.get('cascade_health_index', None)
-    _flags = _summary.get('immediate_red_flags', '')
-    _validated = sum(1 for v in NEWS_OVERLAY.values() if 'Validated' in v.get('status',''))
-    _partial   = sum(1 for v in NEWS_OVERLAY.values() if 'Partial'   in v.get('status',''))
-    _total     = len(NEWS_OVERLAY)
-    _bar_w     = f"{_score}%" if _score else "0%"
-    _bar_color = "#27500A" if _score and _score >= 75 else "#854F0B" if _score and _score >= 50 else "#791F1F"
-    st.markdown(f"""
-<div style='background:#FFFFFF;border:0.5px solid #D6D3CA;border-left:3px solid {_bar_color};
-     border-radius:8px;padding:10px 14px;margin-bottom:10px;'>
-  <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;'>
-    <span style='font-size:11px;font-weight:600;color:#1A1A18;'>📰 Live news overlay active — {_total} cells annotated</span>
-    <span style='font-size:11px;font-weight:600;color:{_bar_color};'>Cascade health: {_score}/100</span>
-  </div>
-  <div style='background:#F1EFE8;border-radius:4px;height:6px;margin-bottom:8px;'>
-    <div style='background:{_bar_color};width:{_bar_w};height:6px;border-radius:4px;'></div>
-  </div>
-  <div style='display:flex;gap:12px;margin-bottom:6px;'>
-    <span style='font-size:10px;background:#EAF3DE;color:#27500A;padding:2px 7px;border-radius:4px;'>✅ Validated: {_validated}</span>
-    <span style='font-size:10px;background:#FFF8E8;color:#854F0B;padding:2px 7px;border-radius:4px;'>⚠️ Partial: {_partial}</span>
-    <span style='font-size:10px;background:#F1EFE8;color:#666560;padding:2px 7px;border-radius:4px;'>⏳ Too early: {_total - _validated - _partial}</span>
-  </div>
-  <div style='font-size:10px;color:#666560;line-height:1.5;'><b style='color:#791F1F;'>Red flags:</b> {_flags}</div>
-</div>""", unsafe_allow_html=True)
-elif not NEWS_OVERLAY:
-    st.info("📂 Place **news.json** in the same folder as m.py to activate live news overlays on each cell.")
-
-st.markdown("<div class='section-header'>Month-by-month timeline</div>", unsafe_allow_html=True)
-
-# Phase pills
-st.markdown("""
-<div style='margin-bottom:12px;'>
-  <span class='phase-pill ph-vacuum'><span class='phase-dot' style='background:#6366f1'></span>Phase 1: AI vacuum (now → Sep 2026)</span>
-  <span class='phase-pill ph-stress'><span class='phase-dot' style='background:#f59e0b'></span>Phase 2: Stress fractures (Oct 2026 → Mar 2027)</span>
-  <span class='phase-pill ph-rupture'><span class='phase-dot' style='background:#ef4444'></span>Phase 3: Rupture (Apr → Sep 2027)</span>
-  <span class='phase-pill ph-reset'><span class='phase-dot' style='background:#22c55e'></span>Phase 4: Reset / deploy (H2 2027 → 2028)</span>
-</div>
-""", unsafe_allow_html=True)
-
-# Column headers
-st.markdown("""
-<div style='display:grid;grid-template-columns:95px 1fr 1fr 1fr 1fr 1fr;gap:5px;margin-bottom:4px;'>
-  <span style='font-size:10px;color:#4b5563;'></span>
-  <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>IPO events</span>
-  <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>Macro / bonds</span>
-  <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>401(k) impact</span>
-  <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>Gold / INR</span>
-  <span style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em;'>India action</span>
-</div>
-""", unsafe_allow_html=True)
-
-for row_idx, row in enumerate(TIMELINE_ROWS):
-    cells_html = ''
-    for col_idx, (cls, title, desc) in enumerate(row['cells']):
-        overlay = news_overlay_html(row_idx, col_idx)
-        cells_html += f"<div class='tl-cell {cls}'><b>{title}</b><span>{desc}</span>{overlay}</div>"
-
-    period_display = row['period'].replace('\n', '<br>')
-    st.markdown(f"""
-    <div class='timeline-row'>
-      <div class='tl-date'>{period_display}</div>
-      {cells_html}
-    </div>""", unsafe_allow_html=True)
+    # ── 401K destruction explainer ──────────────────────────────────────────────
+    st.markdown("<div class='section-header'>401(k) destruction mechanism — why it amplifies everything</div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;'>
+      <div class='tl-cell cell-401k' style='min-height:72px;'>
+        <b>Concentration risk</b>
+        <span>Top 10 S&P stocks = ~40% of index. All AI bets. 401(k) = forced AI exposure. Fidelity avg $141K already ↓4% in Q1 2026.</span>
+      </div>
+      <div class='tl-cell cell-401k' style='min-height:72px;'>
+        <b>Forced selling amplifier</b>
+        <span>Boomers near retirement cannot wait for recovery. Forced sellers at lows. Each withdrawal accelerates the crash. Reflexive doom loop.</span>
+      </div>
+      <div class='tl-cell cell-401k' style='min-height:72px;'>
+        <b>Policy response = inflationary</b>
+        <span>Political pressure for 401(k) bailout = money printing. 65M boomers = electoral force. This validates and extends the gold thesis.</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
-# ── 401K destruction explainer ──────────────────────────────────────────────
-st.markdown("<div class='section-header'>401(k) destruction mechanism — why it amplifies everything</div>", unsafe_allow_html=True)
-st.markdown("""
-<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;'>
-  <div class='tl-cell cell-401k' style='min-height:72px;'>
-    <b>Concentration risk</b>
-    <span>Top 10 S&P stocks = ~40% of index. All AI bets. 401(k) = forced AI exposure. Fidelity avg $141K already ↓4% in Q1 2026.</span>
-  </div>
-  <div class='tl-cell cell-401k' style='min-height:72px;'>
-    <b>Forced selling amplifier</b>
-    <span>Boomers near retirement cannot wait for recovery. Forced sellers at lows. Each withdrawal accelerates the crash. Reflexive doom loop.</span>
-  </div>
-  <div class='tl-cell cell-401k' style='min-height:72px;'>
-    <b>Policy response = inflationary</b>
-    <span>Political pressure for 401(k) bailout = money printing. 65M boomers = electoral force. This validates and extends the gold thesis.</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+    # ── Crude section ────────────────────────────────────────────────────────────
+    st.markdown("<div class='section-header'>Crude oil — the physical world variable</div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;'>
+      <div class='tl-cell cell-macro' style='min-height:72px;'>
+        <b>Iran / Hormuz factor</b>
+        <span>Strait still effectively closed. ~20% of global oil supply. Groman: physical world kicking financial world in the head.</span>
+      </div>
+      <div class='tl-cell cell-macro' style='min-height:72px;'>
+        <b>Front-end rate killer</b>
+        <span>High oil = inflation = Fed can't cut. Besson shifted issuance to front-end. Oil up = front-end up = deficit explodes 6→10%.</span>
+      </div>
+      <div class='tl-cell cell-danger' style='min-height:72px;'>
+        <b>Tank bottom signal</b>
+        <span>Groman: "sometime between now and Labor Day, people start hitting tank bottoms." That's when charts go vertical. Watch closely.</span>
+      </div>
+      <div class='tl-cell cell-gold' style='min-height:72px;'>
+        <b>India inflation channel</b>
+        <span>India imports ~85% of oil needs. High crude = imported inflation = RBI pressure = INR weakness = gold in INR higher.</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
-# ── Crude section ────────────────────────────────────────────────────────────
-st.markdown("<div class='section-header'>Crude oil — the physical world variable</div>", unsafe_allow_html=True)
-st.markdown("""
-<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;'>
-  <div class='tl-cell cell-macro' style='min-height:72px;'>
-    <b>Iran / Hormuz factor</b>
-    <span>Strait still effectively closed. ~20% of global oil supply. Groman: physical world kicking financial world in the head.</span>
-  </div>
-  <div class='tl-cell cell-macro' style='min-height:72px;'>
-    <b>Front-end rate killer</b>
-    <span>High oil = inflation = Fed can't cut. Besson shifted issuance to front-end. Oil up = front-end up = deficit explodes 6→10%.</span>
-  </div>
-  <div class='tl-cell cell-danger' style='min-height:72px;'>
-    <b>Tank bottom signal</b>
-    <span>Groman: "sometime between now and Labor Day, people start hitting tank bottoms." That's when charts go vertical. Watch closely.</span>
-  </div>
-  <div class='tl-cell cell-gold' style='min-height:72px;'>
-    <b>India inflation channel</b>
-    <span>India imports ~85% of oil needs. High crude = imported inflation = RBI pressure = INR weakness = gold in INR higher.</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+    # ── Footer ───────────────────────────────────────────────────────────────────
+    st.markdown("""
+    <div class='note-box' style='margin-top:20px;'>
+    <b>Data sources:</b> Gold historical: datasets/gold-prices (GitHub/LBMA). S&P 500: vega-datasets. Crude oil, INR, equities: estimated from known anchor points — live feeds require Yahoo Finance / Bloomberg API keys. IPO data: Reuters, Investing.com, FutureSearch (Jun 2026). 401(k) data: Fidelity Q1 2026 report. All projections are analytical scenario estimates, not investment advice. Scenarios are probabilistic, not forecasts. Please do your own research.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f"<p style='font-size:10px;color:#374151;margin-top:8px;'>Last refreshed: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} · Data auto-refreshes every 5 minutes</p>", unsafe_allow_html=True)
 
 
-# ── Footer ───────────────────────────────────────────────────────────────────
-st.markdown("""
-<div class='note-box' style='margin-top:20px;'>
-<b>Data sources:</b> Gold historical: datasets/gold-prices (GitHub/LBMA). S&P 500: vega-datasets. Crude oil, INR, equities: estimated from known anchor points — live feeds require Yahoo Finance / Bloomberg API keys. IPO data: Reuters, Investing.com, FutureSearch (Jun 2026). 401(k) data: Fidelity Q1 2026 report. All projections are analytical scenario estimates, not investment advice. Scenarios are probabilistic, not forecasts. Please do your own research.
-</div>
-""", unsafe_allow_html=True)
+# ======================================================================
+# NAVIGATION
+# ======================================================================
+st.sidebar.title("📂 Dashboard Navigation")
+page = st.sidebar.radio(
+    "Select dashboard",
+    ["US Economy Pipeline", "AI IPO Macro Dashboard"],
+)
+st.sidebar.markdown("---")
 
-st.markdown(f"<p style='font-size:10px;color:#374151;margin-top:8px;'>Last refreshed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} · Data auto-refreshes every 5 minutes</p>", unsafe_allow_html=True)
+# ── GIFT Nifty live banner (always visible at the top of every page) ──
+render_gift_nifty_banner()
+
+if page == "US Economy Pipeline":
+    render_us_economy_pipeline()
+else:
+    render_ai_ipo_macro_dashboard()
