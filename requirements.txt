@@ -6,5 +6,5 @@ streamlit
 yfinance
 matplotlib
 openpyxl>=3.1
-pandas-datareader>=0.10.0
+pandas-datareader==0.10.0
 setuptools>=70
